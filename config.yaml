@@ -1,0 +1,215 @@
+# =============================================================================
+# Swing scanner configuration
+# Everything tunable lives here. Change numbers, not code.
+# =============================================================================
+
+universe:
+  # Which lists to combine. Options: sp500, sp400, sp600, custom, file
+  # Start small, add "sp600" or your own list later to expand toward ~6000 names.
+  sources: [sp500, sp400]
+
+  # Always-included extras (your own watchlist)
+  custom: []
+
+  # Optional: path to a newline-delimited .txt of tickers (used if "file" in sources)
+  file_path: "my_tickers.txt"
+
+  # Cache the resolved ticker list this many days before re-fetching from Wikipedia
+  cache_days: 7
+
+# Which side(s) to scan
+direction:
+  long: true
+  short: true
+
+# Moving averages. Soft filter: only the clear misfits are dropped, then
+# alignment across timeframes drives the sort order.
+ma:
+  fast: 20
+  slow: 200
+
+  # Wrong side of the 200MA — trend disagrees with the trade outright
+  max_pct_below_slow_long: 0.12    # drop longs more than 12% under the 200MA
+  max_pct_above_slow_short: 0.12   # drop shorts more than 12% over the 200MA
+
+  # Too far along in the trade's own direction — the move is largely spent
+  max_pct_above_slow_long: 0.60    # drop longs more than 60% over the 200MA
+  max_pct_below_slow_short: 0.60   # drop shorts more than 60% under the 200MA
+
+  # Extension from the 20MA, measured in average daily ranges rather than %.
+  # This is the filter that removes post-earnings-gap chases: a stock 6 ADR
+  # below its 20MA keeps detecting as a bear flag and is a terrible short entry.
+  max_ext_fast_adr: 3.0      # in the trade's direction (chasing)
+  max_pullback_fast_adr: 4.0 # against it (falling knife / dead-cat bounce)
+
+# Multi-timeframe context
+mtf:
+  weekly: true
+  hourly: true
+  hourly_shortlist: 80       # only fetch hourly for the top N daily candidates
+  hourly_period_days: 180    # Yahoo caps 60m history at ~730d
+  hourly_cache_hours: 6
+  hourly_batch: 50
+
+# How the morning list is ordered. NOT a prediction - see README.
+ranking:
+  w_alignment: 0.40      # do hourly / daily / weekly agree with the direction
+  w_readiness: 0.30      # is price actually near the trigger
+  w_structure: 0.15      # is the formation clean enough to read
+  w_tradeability: 0.15   # is there enough daily range to be worth watching
+  adr_floor: 1.0         # ADR% scoring 0
+  adr_ceiling: 4.0       # ADR% scoring full marks
+
+liquidity:
+  min_price: 5.0
+  max_price: 2000.0
+  min_adr_pct: 1.2       # average daily range - below this there's nothing to trade
+  # Median dollar volume over the lookback must exceed this. $5M keeps fills realistic.
+  min_dollar_volume: 5000000
+  dollar_volume_lookback: 60
+  # Require at least this many bars of history to evaluate a name
+  min_history_bars: 260
+
+data:
+  # Trading days of history to pull. 500 ~ 2 years. Backtesting wants 1500+.
+  history_days: 750
+  cache_dir: "data_cache"
+  batch_size: 100          # tickers per yfinance request
+  max_cache_age_hours: 12  # re-download if cached data is older than this
+  benchmark: "SPY"
+
+# -----------------------------------------------------------------------------
+# Pattern detectors. Enable/disable and tune each independently.
+# Thresholds are deliberately LOOSER than textbook definitions - see README.
+# -----------------------------------------------------------------------------
+patterns:
+  volatility_compression:
+    enabled: true
+    lookback: 60           # window used for the volatility percentile
+    squeeze_window: 20     # bars of range used to measure current compression
+    max_atr_percentile: 25 # current ATR% must sit in the bottom N% of lookback
+    min_trend_filter: true # require price above its 50-day SMA
+
+  flat_base:
+    enabled: true
+    min_len: 25            # bars (~5 weeks)
+    max_len: 90
+    max_depth: 0.20        # max high-to-low depth of the base (loose: textbook says 15%)
+    max_dist_from_high: 0.15  # base high must be within this % of 52w high
+    min_prior_advance: 0.15   # required run-up into the base
+
+  symmetrical_triangle:
+    enabled: true
+    min_len: 20
+    max_len: 90
+    pivot_window: 3        # bars each side for a swing high/low
+    min_touches: 4         # total across both trendlines
+    min_convergence: 0.25  # end width must be <= (1 - this) * start width
+    min_height_pct: 0.06   # triangle height as % of price (tall > short, see README)
+
+  ascending_triangle:
+    enabled: true
+    min_len: 20
+    max_len: 90
+    pivot_window: 3
+    max_resistance_slope: 0.0008  # per-bar slope of the "flat" top, as fraction of price
+    min_support_slope: 0.0005     # rising lows
+
+  bull_flag:
+    enabled: true
+    pole_lookback: 25
+    min_pole_gain: 0.15
+    flag_min_len: 4
+    flag_max_len: 25
+    flag_max_retrace: 0.50   # pullback as fraction of pole
+    flag_max_range: 0.30     # loose on purpose - textbook says 10%
+
+  three_soldiers:
+    enabled: true
+    min_candle_return: -0.005   # relaxed: a -0.3% day still qualifies
+    min_total_return: 0.03
+    min_close_position: 0.55    # avg close position within each day's range
+
+# -----------------------------------------------------------------------------
+# Scoring. Max 40 points: structure 16 / volume 14 / readiness 10.
+# Calibrated against the "imperfect setups outperform" findings.
+# RE-TUNE THESE FROM YOUR OWN BACKTEST OUTPUT. Do not trust them as given.
+# -----------------------------------------------------------------------------
+scoring:
+  min_score_to_report: 20
+
+  volume:
+    # Share of the top-quintile volume days that closed up. The single strongest
+    # filter claimed in the source material. 0.5 = neutral.
+    accumulation_lookback: 60
+    accumulation_top_pct: 0.22
+    accum_strong: 0.65      # full points at or above
+    accum_weak: 0.45        # zero points at or below
+
+    # Recent volume vs 50d average. Sweet spot is MODERATE, not extreme.
+    ratio_ideal_low: 1.0
+    ratio_ideal_high: 1.5
+    ratio_penalty_above: 2.5  # heavier volume than this scores near zero
+
+    # Volume should contract through the formation (daily timeframe only)
+    contraction_full: -0.03   # slope <= this gets full points
+
+  structure:
+    # Height/depth is the strongest geometric predictor - reward it.
+    height_full: 0.24        # pattern height >= 24% of price = full points
+    height_zero: 0.06
+    # Touch count is NOT rewarded. Above this it is mildly penalised (crowding).
+    touch_penalty_above: 6
+    touch_penalty_points: 2
+
+  readiness:
+    # Distance below the trigger level, in ATR. Closer = more ready.
+    max_atr_to_trigger: 2.0
+    # "Loud start": a big move today consumes the breakout and attracts crowds.
+    loud_start_threshold: 0.03
+    loud_start_penalty: 4
+
+# -----------------------------------------------------------------------------
+# Market regime (computed from the benchmark, not the individual stock)
+# -----------------------------------------------------------------------------
+regime:
+  fast_sma: 50
+  slow_sma: 200
+  slope_window: 20
+  vol_window: 20
+  vol_percentile_lookback: 252
+  # Advisory multipliers applied to the final score by regime.
+  # Set all to 1.0 until YOUR backtest confirms the direction.
+  multipliers:
+    bull_low: 1.00
+    bull_medium: 1.00
+    bull_high: 1.00
+    bear_low: 1.00
+    bear_medium: 1.00
+    bear_high: 1.00
+
+# -----------------------------------------------------------------------------
+# Trade level construction (informational - you place the orders yourself)
+# -----------------------------------------------------------------------------
+trade_levels:
+  trigger_buffer_atr: 0.10   # entry sits this far above the breakout level
+  stop_atr_mult: 1.50
+  stop_max_pct: 0.08         # never risk more than this per share
+  target_conservative_r: 1.5 # in units of initial risk (R)
+  target_aggressive_r: 3.0
+
+output:
+  dir: "reports"
+  max_rows: 22          # names on the morning list
+  max_per_side: 14      # cap either side so one direction can't crowd out the other
+  one_per_ticker: true  # best setup per ticker, no duplicate rows
+  write_html: true
+  write_csv: true
+  # Also write index.html here for GitHub Pages to serve. Set to null to skip.
+  publish_dir: "docs"
+
+backtest:
+  forward_days: 10
+  # Walk the scan across history every N trading days
+  step: 5
+  min_detections_per_bucket: 75
