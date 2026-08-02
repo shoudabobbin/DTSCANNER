@@ -208,6 +208,16 @@ output:
   # Also write index.html here for GitHub Pages to serve. Set to null to skip.
   publish_dir: "docs"
 
+  # Which machine is allowed to push to GitHub Pages.
+  #
+  # Two clones pushing to one repo diverge, and you find out on some evening
+  # when you aren't watching. Run `python publish.py --claim` on the machine
+  # that should own publishing; it writes that machine's hostname here. Every
+  # other clone will then refuse to push after it pulls this file.
+  #
+  # null = no restriction (any machine may publish).
+  publisher_host: null
+
 backtest:
   forward_days: 10
   # Walk the scan across history every N trading days

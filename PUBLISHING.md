@@ -73,6 +73,51 @@ python publish.py --setup    # reprint these instructions
 `publish.py` only ever touches `docs/`. A failed push can't affect your code or
 your data cache, and if the push fails the commit is still saved locally.
 
+### Making sure only one machine publishes
+
+Two clones pushing to one repo diverge. Git will reject the second push rather
+than corrupt anything, so the damage is a stale page and a silent failure in a
+log you aren't reading — but that's still a bad way to find out.
+
+`publish.py` enforces this rather than leaving it to memory. On the machine that
+should own publishing:
+
+```bat
+python publish.py --claim
+git add config.yaml
+git commit -m "publish from DELL-TOWER"
+git push
+```
+
+That writes the machine's hostname into `config.yaml` under
+`output.publisher_host`. Every other clone refuses to push as soon as it pulls
+that file:
+
+```
+Not the publisher — skipping push.
+  this machine : SHREK-LAPTOP
+  publisher    : DELL-TOWER   (config.yaml -> output.publisher_host)
+
+The scan still ran and docs/index.html is up to date locally.
+```
+
+The check runs **before** anything is committed, so a non-publisher clone leaves
+no trace at all — no dangling commit to clean up later. It also exits 0, because
+"this machine doesn't publish" isn't a failure; `run_daily.bat` still succeeds
+and you still get a local page for development.
+
+To see where things stand on any machine:
+
+```bat
+python publish.py --who
+```
+
+To move publishing to a different machine, run `--claim` there and push. The old
+publisher stands down the next time it pulls.
+
+Leaving `publisher_host: null` means no restriction — fine if you only ever have
+one clone.
+
 ---
 
 ## Option B — Netlify Drop (no account, no git)
