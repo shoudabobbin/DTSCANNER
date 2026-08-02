@@ -3,7 +3,7 @@
 Reviewed August 1 2026 against the repo as shipped. This is a critique, so it
 reads negative; that's the assignment, not a verdict on the work. The code is
 well-organised, the point-in-time discipline in `scan.py` is real, and
-`BACKTEST_FINDINGS.md` is more honest than most published research. Several of
+`research/BACKTEST_FINDINGS.md` is more honest than most published research. Several of
 the problems below are ones the README already half-anticipates.
 
 Four things are already fixed in the code. Everything else is described, not
@@ -51,8 +51,8 @@ swing idea generator) or add a genuinely intraday layer on top.
 
 ## 2. What I measured
 
-`reports/backtest_detections.csv` has no `side`, `rank` or `align` column, and
-`BACKTEST_FINDINGS.md` refers to "all six" patterns. That file was produced
+`research/backtest_2023-2026_longonly.csv` has no `side`, `rank` or `align` column, and
+`research/BACKTEST_FINDINGS.md` refers to "all six" patterns. That file was produced
 before the short book and before the ranking rebuild. So I re-ran it.
 
 **Setup:** 8,781 detections · 893 tickers · 15 scan dates evenly spaced across
@@ -111,7 +111,7 @@ at" is fair — but it should say plainly that it has been tested and does not
 rank outcomes.
 
 I flag the pooled-vs-within-date gap prominently because it is the exact failure
-mode `BACKTEST_FINDINGS.md` warns about, and I walked into it before checking.
+mode `research/BACKTEST_FINDINGS.md` warns about, and I walked into it before checking.
 
 ### The heaviest-weighted component does nothing
 
@@ -209,7 +209,7 @@ several times too narrow.
 
 This is the mechanism that produced the false "top-22 underperforms" result in
 §2 and, I'd suggest, is worth suspecting for the three rejected findings in
-`BACKTEST_FINDINGS.md` too. **Recommendation:** add a within-date comparison to
+`research/BACKTEST_FINDINGS.md` too. **Recommendation:** add a within-date comparison to
 `summarize()`. Comparing buckets against each other *inside* a single scan date
 removes the market factor entirely and is the right default for a
 cross-sectional scanner.
@@ -417,7 +417,7 @@ In order of value per hour spent:
 1. **Add earnings dates.** Cheapest fix, largest practical effect. Flag anything
    reporting within 5 trading days and exclude it from the backtest windows too.
 2. **Fix the survivorship bias**, or stop quoting backtest numbers. Everything in
-   §2 and in `BACKTEST_FINDINGS.md` is measured on a sample that excludes the
+   §2 and in `research/BACKTEST_FINDINGS.md` is measured on a sample that excludes the
    losers. This is the difference between "unproven" and "unmeasurable."
 3. **Add a within-date comparison to `summarize()`.** One function, and it
    removes the single most likely source of false findings in this project.

@@ -4,7 +4,7 @@ Narrows ~900 liquid US stocks down to ~20 names worth pulling up before the
 open — long and short. Scanner only: no orders, no broker connection.
 
 **It does not predict anything, and doesn't try to.** The backtest
-(`reports/BACKTEST_FINDINGS.md`) showed the pattern score has no predictive
+(`research/BACKTEST_FINDINGS.md`) showed the pattern score has no predictive
 power on this data. What survived is the useful part: a funnel that finds
 structure, checks whether hourly / daily / weekly agree, and hands you a short
 list. The judgment is yours.
@@ -145,6 +145,7 @@ Two outcome definitions are recorded because they answer different questions:
 | `publish.py` | Commits and pushes `docs/` to GitHub Pages |
 | `FLAWS.md` | Review: measured weaknesses, methodology problems, bug fixes |
 | `PUBLISHING.md` | One-time setup to get the page on a URL |
+| `research/` | Backtest write-ups and the raw detection data behind them |
 
 ## Expanding the universe
 
@@ -235,7 +236,7 @@ validation are what separate the two, not how good the table looks.
 
 ## What the backtest actually found
 
-Full write-up in `reports/BACKTEST_FINDINGS.md`. Short version, from 5,705
+Full write-up in `research/BACKTEST_FINDINGS.md`. Short version, from 5,705
 detections over Apr 2023 – Jun 2026:
 
 - Market beat rate **47.9%** — the average detection underperformed holding SPY

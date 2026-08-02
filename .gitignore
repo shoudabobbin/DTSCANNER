@@ -1,6 +1,25 @@
-__pycache__/
-*.pyc
-data_cache/
+# Generated output — changes every run, no business in version control
 reports/
 reports_selftest/
+data_cache/
+
+# NOT ignored, deliberately:
+#   docs/      — the published page, GitHub Pages serves it from here
+#   research/  — backtest write-ups and the raw data behind them. These are the
+#                record of what was measured, so they belong in git even though
+#                they're technically generated.
+
+__pycache__/
+*.pyc
+*.pyo
 .venv/
+venv/
+env/
+
+# Editor / OS noise
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+.DS_Store
