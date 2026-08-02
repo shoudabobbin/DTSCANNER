@@ -216,7 +216,7 @@ output:
   # other clone will then refuse to push after it pulls this file.
   #
   # null = no restriction (any machine may publish).
-  publisher_host: null
+  publisher_host: "DESKTOP-669Q1N3"
 
 backtest:
   forward_days: 10
