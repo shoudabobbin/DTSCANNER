@@ -1,0 +1,22 @@
+# Normalise line endings.
+#
+# Two machines (laptop + Dell) check out the same files. Without this, Git
+# converts CRLF/LF differently per machine and every file looks modified on the
+# other one — `git diff` reported 436 changed lines in publish.py when the real
+# answer was zero. Worse, publish.py would commit and push that phantom churn
+# every night forever.
+#
+# text=auto eol=lf: store LF in the repo, and since these are all tools that
+# handle LF fine on Windows (Python, git bash, browsers), check out LF too.
+
+* text=auto eol=lf
+
+# Windows batch files must keep CRLF or cmd.exe can mis-parse them.
+*.bat text eol=crlf
+
+# Binary — never touch these.
+*.parquet binary
+*.png binary
+*.jpg binary
+*.pdf binary
+*.xlsx binary

@@ -5,8 +5,10 @@
 
 universe:
   # Which lists to combine. Options: sp500, sp400, sp600, custom, file
-  # Start small, add "sp600" or your own list later to expand toward ~6000 names.
-  sources: [sp500, sp400]
+  # sp600 (small caps) roughly doubles the count of names under $50. Changing
+  # this list auto-invalidates data_cache/universe.json, but the first run after
+  # a change downloads ~600 new price histories, so allow a few extra minutes.
+  sources: [sp500, sp400, sp600]
 
   # Always-included extras (your own watchlist)
   custom: []

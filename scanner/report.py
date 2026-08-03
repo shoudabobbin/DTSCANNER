@@ -217,6 +217,19 @@ input[type=search]{width:150px}
 input[type=search]:focus,select:focus{border-color:var(--accent)}
 .spacer{flex:1}
 .count{color:var(--faint);font-size:12px}
+.sizer{display:flex;flex-wrap:wrap;gap:8px 10px;align-items:center;margin:-6px 0 14px;
+  padding:9px 12px;background:var(--panel);border:1px solid var(--line);border-radius:8px}
+.sizer .lbl{font-size:11.5px;color:var(--dim)}
+.sizer input{width:82px;background:var(--panel2);border:1px solid var(--line);color:var(--txt);
+  border-radius:6px;padding:4px 8px;font:inherit;font-size:12.5px;outline:0;
+  font-variant-numeric:tabular-nums}
+.sizer input:focus{border-color:var(--accent)}
+.szn{font-size:11.5px;color:var(--faint);flex:1;min-width:200px}
+v.size{color:var(--accent)} v.capped{color:var(--warn)}
+button.cp{background:var(--panel);border:1px solid var(--line);color:var(--dim);
+  border-radius:7px;padding:5px 11px;font:inherit;font-size:12px;cursor:pointer;font-weight:550}
+button.cp:hover{color:var(--txt);border-color:var(--accent)}
+button.cp.done{color:var(--long);border-color:var(--long)}
 
 /* ---------------- cards ---------------- */
 #cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:12px}
@@ -331,6 +344,21 @@ footer b{color:var(--dim)}
   <span class="count" id="count"></span>
 </div>
 
+<div class="sizer">
+  <span class="lbl">Account $</span><input type="number" id="acct" min="0" step="100">
+  <span class="lbl">Risk %</span><input type="number" id="risk" min="0.1" max="10" step="0.25">
+  <span class="lbl">Max position %</span><input type="number" id="cap" min="1" max="100" step="5">
+  <span class="szn" id="szn"></span>
+</div>
+
+<div class="bar" style="margin-top:-6px">
+  <span class="lbl" style="font-size:11.5px;color:var(--dim)">thinkorswim:</span>
+  <button class="cp" onclick="copySyms('all',this)">Copy all symbols</button>
+  <button class="cp" onclick="copySyms('long',this)">Copy longs</button>
+  <button class="cp" onclick="copySyms('short',this)">Copy shorts</button>
+  <span class="szn">paste into a thinkorswim watchlist → right-click → Import Symbols</span>
+</div>
+
 <div id="cards"></div>
 <div id="tblwrap" hidden></div>
 <div class="empty" id="empty" hidden>Nothing matches.</div>
@@ -342,6 +370,43 @@ footer b{color:var(--dim)}
 const DATA = __PAYLOAD__;
 const R = DATA.rows, M = DATA.meta;
 let side = "all", view = "cards", sortKey = "rank", q = "";
+
+/* ---- position sizing -------------------------------------------------
+   Assumes fractional shares, so size is expressed in dollars rather than a
+   share count. Two independent limits, whichever binds first:
+     risk-based : (account x risk%) / stop-distance%
+     concentration cap : account x maxPos%
+   The cap matters more than it looks — a 4% stop at 2% risk asks for half a
+   small account in one name. Settings persist in this browser only. */
+const SZ = { acct: 2500, risk: 1, cap: 25 };
+try {
+  const s = JSON.parse(localStorage.getItem("dtscanner.sizing") || "{}");
+  for (const k of ["acct", "risk", "cap"]) if (typeof s[k] === "number") SZ[k] = s[k];
+} catch (e) { }
+function saveSizing() {
+  try { localStorage.setItem("dtscanner.sizing", JSON.stringify(SZ)); } catch (e) { }
+}
+function sizeFor(r) {
+  const stop = Number(r.risk_pct);
+  if (!(SZ.acct > 0) || !(SZ.risk > 0) || !(stop > 0)) return null;
+  const byRisk = (SZ.acct * SZ.risk / 100) / (stop / 100);
+  const byCap = SZ.acct * SZ.cap / 100;
+  let dollars = Math.min(byRisk, byCap);
+  const capped = byCap < byRisk;
+
+  // Longs can be sized in dollars — Schwab quotes notional on most US stocks.
+  // Shorts cannot: a fractional share is a book entry with nothing to borrow,
+  // so a short is always whole shares and gets rounded DOWN. That rounding is
+  // where a small account silently ends up under-risked, so show it.
+  const whole = r.side === "short";
+  let shares = null;
+  if (whole && r.entry > 0) {
+    shares = Math.floor(dollars / r.entry);
+    dollars = shares * r.entry;
+  }
+  return { dollars, capped, whole, shares, risked: dollars * stop / 100 };
+}
+const money = v => "$" + Math.round(v).toLocaleString();
 
 const n = (v, d = 2) => (v === null || v === undefined || Number.isNaN(v)) ? "—" : Number(v).toFixed(d);
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -415,6 +480,16 @@ function tfBadges(r) {
 
 function card(r, i) {
   const dir = r.side === "long" ? 1 : -1;
+  const s = sizeFor(r);
+  let sizeCell = `<div class="cell"><k>Size</k><v class="mute">—</v></div>`;
+  if (s) {
+    const lbl = s.whole ? `${s.shares} sh` : money(s.dollars);
+    const k = s.whole ? "Size (whole)" : (s.capped ? "Size (cap)" : "Size");
+    const cls = s.shares === 0 ? "neg" : (s.capped || s.whole ? "capped" : "size");
+    sizeCell = `<div class="cell"><k>${k}</k><v class="${cls}" ` +
+      `title="${s.whole ? "shorts cannot be fractional — rounded down to whole shares" : "notional order"}">` +
+      `${s.shares === 0 ? "too small" : lbl}</v></div>`;
+  }
   return `<div class="card ${r.side}">
     <div class="chead">
       <span class="tick">${esc(r.ticker)}</span>
@@ -424,10 +499,11 @@ function card(r, i) {
     <div class="setup">${esc(pretty(r.pattern))} ${tfBadges(r)}</div>
     ${ladder(r)}
     <div class="grid">
-      <div class="cell"><k>Close</k><v>${n(r.close)}</v></div>
+      ${sizeCell}
       <div class="cell"><k>Entry</k><v>${n(r.entry)}</v></div>
       <div class="cell"><k>Stop</k><v class="neg">${n(r.stop)}</v></div>
       <div class="cell"><k>Risk</k><v>${n(r.risk_pct, 1)}%</v></div>
+      <div class="cell"><k>Close</k><v>${n(r.close)}</v></div>
       <div class="cell"><k>T1</k><v class="pos">${n(r.target_conservative)}</v></div>
       <div class="cell"><k>T2</k><v class="pos">${n(r.target_aggressive)}</v></div>
       <div class="cell"><k>To trig</k><v class="${r.dist_to_trigger_pct < 0 ? "neg" : ""}">${n(r.dist_to_trigger_pct, 2)}%</v></div>
@@ -435,7 +511,6 @@ function card(r, i) {
       <div class="cell"><k>Ext 20MA</k><v class="mute">${n(r.ext20_adr, 1)}</v></div>
       <div class="cell"><k>vs 20MA</k><v class="${sgn(dir * r.d_vs_20ma)}">${n(r.d_vs_20ma, 1)}%</v></div>
       <div class="cell"><k>vs 200MA</k><v class="${sgn(dir * r.d_vs_200ma)}">${n(r.d_vs_200ma, 1)}%</v></div>
-      <div class="cell"><k>Score</k><v class="mute">${n(r.score, 1)}</v></div>
     </div>
     <button class="more" onclick="tog(${i})">detail ▾</button>
     <pre class="det" id="d${i}" hidden>${esc(JSON.stringify(r.detail, null, 2))}</pre>
@@ -448,19 +523,45 @@ function tog(i) {
   e.previousElementSibling.textContent = e.hidden ? "detail ▾" : "detail ▴";
 }
 
+/* thinkorswim imports a plain newline-delimited symbol list from the clipboard */
+function copySyms(which, btn) {
+  const syms = R.filter(r => which === "all" || r.side === which).map(r => r.ticker);
+  const text = syms.join("\n");
+  const done = () => {
+    const old = btn.textContent;
+    btn.textContent = `${syms.length} copied`; btn.classList.add("done");
+    setTimeout(() => { btn.textContent = old; btn.classList.remove("done"); }, 1600);
+  };
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(done, () => fallback(text, done));
+  } else fallback(text, done);
+}
+function fallback(text, done) {
+  const ta = document.createElement("textarea");
+  ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+  document.body.appendChild(ta); ta.select();
+  try { document.execCommand("copy"); done(); } catch (e) { prompt("Copy:", text); }
+  document.body.removeChild(ta);
+}
+
 const COLS = [["ticker", "Ticker"], ["pattern", "Setup"], ["rank", "Rank"],
-["close", "Close"], ["dist_to_trigger_pct", "To Trig%"], ["entry", "Entry"],
-["stop", "Stop"], ["target_conservative", "T1"], ["target_aggressive", "T2"],
-["risk_pct", "Risk%"], ["adr_pct", "ADR%"], ["ext20_adr", "Ext"],
-["d_vs_20ma", "vs20"], ["d_vs_200ma", "vs200"], ["score", "Score"]];
+["size", "Size $"], ["entry", "Entry"], ["stop", "Stop"],
+["target_conservative", "T1"], ["target_aggressive", "T2"],
+["risk_pct", "Risk%"], ["dist_to_trigger_pct", "To Trig%"],
+["close", "Close"], ["adr_pct", "ADR%"], ["ext20_adr", "Ext"],
+["d_vs_20ma", "vs20"], ["d_vs_200ma", "vs200"]];
 
 function table(rows) {
   const head = COLS.map(([k, l]) => `<th data-k="${k}">${l}</th>`).join("");
   const body = rows.map(r => "<tr class='" + r.side + "'>" + COLS.map(([k]) => {
     if (k === "ticker") return `<td class="t">${esc(r.ticker)}</td>`;
     if (k === "pattern") return `<td>${esc(pretty(r.pattern))}</td>`;
+    if (k === "size") {
+      const s = sizeFor(r);
+      return `<td class="${s && s.capped ? "capped" : ""}">${s ? money(s.dollars) : "—"}</td>`;
+    }
     const v = r[k];
-    const dec = (k === "rank" || k === "adr_pct" || k === "risk_pct" || k === "score" || k === "ext20_adr") ? 1 : 2;
+    const dec = (k === "rank" || k === "adr_pct" || k === "risk_pct" || k === "ext20_adr") ? 1 : 2;
     return `<td>${n(v, dec)}</td>`;
   }).join("") + "</tr>").join("");
   return `<table id="tbl"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
@@ -504,6 +605,28 @@ document.querySelectorAll("#viewseg button").forEach(b => b.onclick = () => {
 });
 document.getElementById("sort").onchange = e => { sortKey = e.target.value; render(); };
 document.getElementById("q").oninput = e => { q = e.target.value; render(); };
+
+/* ---- sizing controls ---- */
+const acctEl = document.getElementById("acct"), riskEl = document.getElementById("risk"),
+      capEl = document.getElementById("cap"), sznEl = document.getElementById("szn");
+acctEl.value = SZ.acct; riskEl.value = SZ.risk; capEl.value = SZ.cap;
+function sizingNote() {
+  const rd = SZ.acct * SZ.risk / 100, cap = SZ.acct * SZ.cap / 100;
+  const nCapped = R.filter(r => { const s = sizeFor(r); return s && s.capped; }).length;
+  const nZero = R.filter(r => { const s = sizeFor(r); return s && s.whole && s.shares === 0; }).length;
+  sznEl.innerHTML =
+    `Risking ${money(rd)} per trade · position capped at ${money(cap)}` +
+    (nCapped ? ` · <b style="color:var(--warn)">${nCapped}</b> hit the cap` : "") +
+    (nZero ? ` · <b style="color:var(--short)">${nZero}</b> short(s) too small for 1 whole share` : "") +
+    ` · longs sized notionally, shorts rounded down to whole shares`;
+}
+for (const [el, key] of [[acctEl, "acct"], [riskEl, "risk"], [capEl, "cap"]]) {
+  el.oninput = () => {
+    const v = parseFloat(el.value);
+    if (Number.isFinite(v) && v >= 0) { SZ[key] = v; saveSizing(); sizingNote(); render(); }
+  };
+}
+sizingNote();
 
 document.getElementById("foot").innerHTML = `
 <b>Rank</b> is a sort key, not a probability — 40% timeframe alignment, 30% proximity to the
