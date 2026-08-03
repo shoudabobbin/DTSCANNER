@@ -202,6 +202,8 @@ h1{font-size:20px;margin:0;letter-spacing:-.2px;font-weight:650}
   border-radius:8px;padding:10px 13px;margin:0 0 14px;font-size:12.5px;color:var(--txt)}
 .banner .ic{color:var(--warn);font-weight:700;flex:none}
 .banner span.k{color:var(--dim)}
+.banner.bad{background:var(--shortbg);border-color:var(--shortln);border-left-color:var(--short)}
+.banner.bad .ic{color:var(--short)}
 
 .bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:14px}
 .seg{display:inline-flex;background:var(--panel);border:1px solid var(--line);
@@ -425,16 +427,55 @@ document.getElementById("pills").innerHTML = [
   M.raw ? `<span class="pill"><b>${M.raw}</b> raw detections</span>` : "",
 ].join("");
 
-/* ---- staleness: computed live, every time you open the page ---- */
+/* ---- staleness: computed live, every time you open the page ----
+   The close is 16:00 America/New_York, which is UTC-4 in summer and UTC-5 in
+   winter. Hardcoding either one is wrong for half the year, so resolve the
+   real offset for that date via Intl rather than guessing. */
+function nyOffsetMinutes(date) {
+  const f = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York", hour12: false, year: "numeric",
+    month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+    second: "2-digit",
+  });
+  const p = {};
+  for (const x of f.formatToParts(date)) p[x.type] = x.value;
+  const asUTC = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour % 24, +p.minute, +p.second);
+  return (asUTC - date.getTime()) / 60000;
+}
+function nyCloseMs(dateStr) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const probe = new Date(Date.UTC(y, m - 1, d, 20, 0, 0));
+  const off = nyOffsetMinutes(probe);
+  return Date.UTC(y, m - 1, d, 16, 0, 0) - off * 60000;
+}
+
 (function () {
   const el = document.getElementById("stale");
-  const close = new Date(M.barDate + "T16:00:00-05:00");   // ~US close
-  const hrs = (Date.now() - close.getTime()) / 3.6e6;
-  const d = Math.floor(hrs / 24), h = Math.round(hrs % 24);
-  const age = d >= 1 ? `${d}d ${h}h` : `${Math.round(hrs)}h`;
+  const hrs = (Date.now() - nyCloseMs(M.barDate)) / 3.6e6;
+
   let extra = "";
   if (M.staleTickers) extra += ` <span class="k">·</span> ${M.staleTickers} symbol(s) had older data than the rest.`;
   if (M.dropped) extra += ` <span class="k">·</span> ${M.dropped} symbol(s) failed to download and were excluded.`;
+
+  // Negative age means the scan ran before 16:00 ET on its own bar date — the
+  // final daily bar was still forming. Every high, low, close and therefore
+  // every trigger and stop on this page came from a partial session.
+  if (hrs < 0) {
+    const mins = Math.round(-hrs * 60);
+    const when = mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`;
+    el.className = "banner bad";
+    el.innerHTML = `<span class="ic">✕</span><div>
+      <b>Incomplete bar — this scan ran ${when} before the ${M.barDate} close.</b>
+      The final daily bar was still forming, so every high, low and close for
+      ${M.barDate} is partial. Triggers, stops and targets on this page are
+      computed from an unfinished session and will change.
+      <b>Re-run after 16:00 ET and reload.</b>${extra}</div>`;
+    return;
+  }
+
+  const d = Math.floor(hrs / 24), h = Math.round(hrs % 24);
+  const age = d >= 1 ? `${d}d ${h}h` : `${Math.round(hrs)}h`;
+  el.className = "banner";
   el.innerHTML = `<span class="ic">!</span><div><b>Built from the ${M.barDate} close — ${age} old.</b>
     Entry, stop and target levels have <b>not</b> been re-validated against today's pre-market.
     A gap through the entry means the level is already gone and the risk on the printed stop is no longer what it says.
