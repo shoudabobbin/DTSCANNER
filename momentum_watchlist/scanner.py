@@ -1,0 +1,640 @@
+#!/usr/bin/env python3
+"""
+Momentum Day-Trading Watchlist  —  live, self-hosting scanner
+=============================================================
+Builds a good-looking morning watchlist of in-play small/mid-cap movers and
+(optionally) publishes it to GitHub Pages so you can pull it up on your phone.
+
+- Data: Yahoo Finance via yfinance. No API key, no request limit, free.
+- Runs 24/7: rescans every few minutes while the US market is open, idles
+  nights and weekends.
+- It does NOT trade or predict. It hands you a list to study. You trade.
+
+QUICK START
+-----------
+    pip install -r requirements.txt
+    python scanner.py --demo         # offline sample -> writes docs/index.html
+    python scanner.py --once         # one live scan
+    python scanner.py --loop         # run forever, rescan during market hours
+    python scanner.py --loop --publish   # ...and push to GitHub Pages each time
+
+See PUBLISHING.md for the one-time GitHub Pages setup (5 minutes).
+"""
+
+import os
+import sys
+import csv
+import json
+import math
+import time
+import shutil
+import argparse
+import subprocess
+import datetime as dt
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+# ============================================================
+# CONFIG  —  the whole control panel
+# ============================================================
+CONFIG = {
+    "min_price": 1.0,
+    "max_price": 20.0,
+    "min_change_pct": 5.0,        # abs % move today to count as "in play"
+    "min_rel_volume": 1.5,        # today's volume vs normal
+    "min_dollar_volume": 1_000_000,
+    "max_market_cap": 3_000_000_000,   # skip megacap name brands (None to disable)
+
+    "screeners_long":  ["day_gainers", "small_cap_gainers",
+                        "most_actives", "aggressive_small_caps"],
+    "screeners_short": ["day_losers"],
+    "include_shorts": True,       # show both sides; tag each row
+
+    "top_n": 24,
+    "market_tone_symbol": "QQQ",
+
+    # sizing calculator defaults (user can change them live on the page)
+    "default_account": 2500,
+    "default_risk_pct": 1.0,
+    "default_max_position_pct": 25,
+
+    # loop / hosting
+    "refresh_minutes": 5,
+    "market_open":  (9, 5),       # ET hh,mm  (a little before the bell for pre-market)
+    "market_close": (16, 5),      # ET hh,mm
+    "publish_branch": "gh-pages",
+    "out_dir": os.path.join(HERE, "docs"),
+}
+
+JUNK_KEYWORDS = ("ETF", "FUND", "TRUST", "ETN", "2X", "3X", "BULL", "BEAR",
+                 "LEVERAGED", "ACQUISITION", "WARRANT", "RIGHT", "UNIT",
+                 "DIREXION", "PROSHARES", "ISHARES", "SPDR")
+
+
+# ============================================================
+# Data layer (network) — only part that hits Yahoo
+# ============================================================
+def get_screener_rows(names):
+    import yfinance as yf
+    seen = {}
+    for name in names:
+        try:
+            res = yf.screen(name, count=100)
+            quotes = res.get("quotes", []) if isinstance(res, dict) else []
+        except Exception as e:
+            print(f"  ! screener '{name}' failed: {str(e)[:100]}")
+            continue
+        for q in quotes:
+            if q.get("symbol"):
+                seen[q["symbol"]] = q
+        print(f"  {name}: {len(quotes)}")
+    return list(seen.values())
+
+
+def normalize(q):
+    price = q.get("regularMarketPrice")
+    vol = q.get("regularMarketVolume")
+    avg = q.get("averageDailyVolume3Month") or q.get("averageDailyVolume10Day")
+    return {
+        "symbol": q.get("symbol"),
+        "name": q.get("shortName") or q.get("longName") or "",
+        "price": price,
+        "change": q.get("regularMarketChangePercent"),
+        "volume": vol,
+        "rvol": (vol / avg) if (vol and avg) else None,
+        "dollar_vol": (price * vol) if (price and vol) else None,
+        "market_cap": q.get("marketCap"),
+        "quote_type": (q.get("quoteType") or "").upper(),
+    }
+
+
+def enrich(sym):
+    import yfinance as yf
+    try:
+        h = yf.Ticker(sym).history(period="1mo", interval="1d")
+        if len(h) < 2:
+            return {}
+        prev = float(h["Close"].iloc[-2]); today = h.iloc[-1]
+        op, hi, lo = float(today["Open"]), float(today["High"]), float(today["Low"])
+        adr = float(((h["High"] - h["Low"]) / h["Close"]).tail(14).mean() * 100)
+        return {"gap": (op - prev) / prev * 100 if prev else None,
+                "day_high": hi, "day_low": lo, "adr_pct": round(adr, 1)}
+    except Exception:
+        return {}
+
+
+def get_market_tone(sym):
+    import yfinance as yf
+    try:
+        h = yf.Ticker(sym).history(period="5d", interval="1d")
+        chg = (float(h["Close"].iloc[-1]) - float(h["Close"].iloc[-2])) / float(h["Close"].iloc[-2]) * 100
+        return tone_from(chg)
+    except Exception:
+        return {"label": "Unknown", "change": None, "cls": "flat",
+                "mood": "Couldn't read the tape — check QQQ yourself."}
+
+
+# ============================================================
+# Core logic
+# ============================================================
+def tone_from(chg):
+    if chg is None:
+        return {"label": "Unknown", "change": None, "cls": "flat", "mood": "Check QQQ."}
+    if chg > 0.4:
+        return {"label": "Bull", "change": chg, "cls": "bull",
+                "mood": "Favor long breakouts, normal size."}
+    if chg < -0.4:
+        return {"label": "Weak", "change": chg, "cls": "bear",
+                "mood": "Tighten up. Smaller size, be selective, respect failed gappers."}
+    return {"label": "Flat", "change": chg, "cls": "flat",
+            "mood": "No edge from the tape. Trade only A+ setups."}
+
+
+def is_junk(r):
+    if r["quote_type"] and r["quote_type"] != "EQUITY":
+        return True
+    up = (r["name"] + " " + (r["symbol"] or "")).upper()
+    if any(k in up for k in JUNK_KEYWORDS):
+        return True
+    s = r["symbol"] or ""
+    return len(s) >= 5 and s[-1] in "WRU"
+
+
+def passes(r, c):
+    p, ch, dv, rv, mc = r["price"], r["change"], r["dollar_vol"], r["rvol"], r["market_cap"]
+    if p is None or ch is None or is_junk(r):
+        return False
+    if not (c["min_price"] <= p <= c["max_price"]):
+        return False
+    if abs(ch) < c["min_change_pct"]:
+        return False
+    if rv is not None and rv < c["min_rel_volume"]:
+        return False
+    if dv is not None and dv < c["min_dollar_volume"]:
+        return False
+    if c["max_market_cap"] and mc and mc > c["max_market_cap"]:
+        return False
+    return True
+
+
+def raw_score(r):
+    return abs(r["change"]) * math.log10((r["rvol"] or 1.0) * 10 + 1)
+
+
+def suggested_stop_pct(r):
+    adr = r.get("adr_pct")
+    base = adr * 0.5 if adr else 4.0
+    return round(min(max(base, 2.0), 10.0), 1)
+
+
+def build_rows(raw, cfg, live=False):
+    rows = [normalize(q) for q in raw]
+    kept = [r for r in rows if passes(r, cfg)]
+    if not cfg["include_shorts"]:
+        kept = [r for r in kept if r["change"] >= 0]
+    for r in kept:
+        r["_s"] = raw_score(r)
+    kept.sort(key=lambda r: -r["_s"])
+    kept = kept[: cfg["top_n"]]
+    if live:
+        for r in kept:
+            r.update(enrich(r["symbol"]))
+    # normalize score to a 60-99 "rank" for display
+    if kept:
+        lo = min(r["_s"] for r in kept); hi = max(r["_s"] for r in kept)
+        span = (hi - lo) or 1
+    out = []
+    for r in kept:
+        r["stop_pct"] = suggested_stop_pct(r)
+        out.append({
+            "symbol": r["symbol"], "name": r["name"][:34],
+            "dir": "long" if r["change"] >= 0 else "short",
+            "price": round(r["price"], 2),
+            "change": round(r["change"], 1),
+            "rvol": round(r["rvol"], 1) if r["rvol"] else None,
+            "dollar_vol": int(r["dollar_vol"]) if r["dollar_vol"] else None,
+            "gap": round(r["gap"], 1) if r.get("gap") is not None else None,
+            "day_high": round(r["day_high"], 2) if r.get("day_high") else None,
+            "day_low": round(r["day_low"], 2) if r.get("day_low") else None,
+            "adr_pct": r.get("adr_pct"),
+            "stop_pct": r["stop_pct"],
+            "rank": round(60 + 39 * (r["_s"] - lo) / span, 1),
+        })
+    return out
+
+
+# ============================================================
+# HTML  (self-contained; all interactivity is client-side JS)
+# ============================================================
+TEMPLATE = r"""<!DOCTYPE html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="__REFRESH__">
+<title>Momentum Watchlist</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#15202b;--mut:#6b7480;--line:#e6e8ec;
+--green:#0ca35a;--greenbg:#e8f6ee;--red:#d83a45;--redbg:#fbe9ea;--blue:#1f3a5f;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:14px}
+.wrap{max-width:1180px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:0 0 2px}
+.sub{color:var(--mut);font-size:12px;margin-bottom:10px}
+.badges{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.badge{font-size:12px;padding:3px 10px;border-radius:20px;background:#eef0f3;color:#475060}
+.badge.bull{background:var(--greenbg);color:var(--green)}
+.badge.bear{background:var(--redbg);color:var(--red)}
+.note{background:#fff7e6;border:1px solid #ffe2a8;color:#7a5a10;font-size:12px;
+padding:8px 12px;border-radius:8px;margin-bottom:12px}
+.bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;background:var(--card);
+border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:12px}
+.seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{border:0;background:#fff;padding:6px 12px;font-size:13px;cursor:pointer;color:var(--mut)}
+.seg button.on{background:var(--blue);color:#fff}
+select,input{border:1px solid var(--line);border-radius:8px;padding:6px 8px;font-size:13px;background:#fff;color:var(--ink)}
+.size input{width:70px}
+.size label{font-size:11px;color:var(--mut);margin-right:3px}
+.spacer{flex:1}
+button.copy{border:1px solid var(--line);background:#fff;border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer;color:var(--blue)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:12px}
+.card{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--mut);
+border-radius:12px;padding:12px}
+.card.long{border-left-color:var(--green)} .card.short{border-left-color:var(--red)}
+.chd{display:flex;justify-content:space-between;align-items:flex-start}
+.tk{font-size:17px;font-weight:700}
+.tag{font-size:10px;font-weight:700;padding:2px 6px;border-radius:5px;margin-left:6px;vertical-align:2px}
+.tag.long{background:var(--greenbg);color:var(--green)} .tag.short{background:var(--redbg);color:var(--red)}
+.rk{font-size:16px;font-weight:700;text-align:right;line-height:1}
+.rk span{font-size:9px;color:var(--mut);font-weight:500;letter-spacing:.05em}
+.why{font-size:12px;color:var(--mut);margin:3px 0 8px}
+.rangebar{height:6px;background:#eef0f3;border-radius:4px;position:relative;margin:10px 2px 12px}
+.rangebar i{position:absolute;top:-3px;width:2px;height:12px;background:var(--blue)}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px 6px}
+.st .k{font-size:9px;color:var(--mut);letter-spacing:.04em}
+.st .v{font-size:13px;font-weight:600}
+.st .v.g{color:var(--green)} .st .v.r{color:var(--red)}
+.size-row{margin-top:10px;padding-top:10px;border-top:1px dashed var(--line);
+display:grid;grid-template-columns:repeat(4,1fr);gap:8px 6px}
+table{width:100%;border-collapse:collapse;font-size:13px;background:var(--card);border-radius:10px;overflow:hidden}
+th,td{padding:8px 9px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+th{background:var(--blue);color:#fff;font-size:11px;font-weight:600}
+.hide{display:none}
+.foot{color:var(--mut);font-size:11px;margin-top:14px;line-height:1.6}
+@media(max-width:520px){.grid{grid-template-columns:1fr}.wrap{padding:10px}}
+</style></head><body><div class="wrap">
+<h1>Momentum Watchlist</h1>
+<div class="sub" id="sub"></div>
+<div class="badges" id="badges"></div>
+<div class="note" id="note"></div>
+
+<div class="bar">
+  <div class="seg" id="side"><button data-v="all" class="on">All</button>
+    <button data-v="long">Long</button><button data-v="short">Short</button></div>
+  <div class="seg" id="layout"><button data-v="cards" class="on">Cards</button>
+    <button data-v="table">Table</button></div>
+  <select id="sort">
+    <option value="rank">Sort: Score</option>
+    <option value="change">Sort: % Change</option>
+    <option value="rvol">Sort: Rel Volume</option>
+    <option value="dollar_vol">Sort: $ Volume</option>
+    <option value="price">Sort: Price</option></select>
+  <input id="filter" placeholder="Filter ticker...">
+  <div class="spacer"></div>
+  <div class="size"><label>Account $</label><input id="acct" type="number"></div>
+  <div class="size"><label>Risk %</label><input id="risk" type="number" step="0.1"></div>
+  <div class="size"><label>Max pos %</label><input id="maxpos" type="number"></div>
+</div>
+<div class="bar" style="margin-top:-6px">
+  <span style="font-size:12px;color:var(--mut)">Copy symbols to ThinkorSwim:</span>
+  <button class="copy" onclick="copySy('all')">All</button>
+  <button class="copy" onclick="copySy('long')">Longs</button>
+  <button class="copy" onclick="copySy('short')">Shorts</button>
+  <span id="sizenote" style="font-size:12px;color:var(--mut)"></span>
+</div>
+
+<div id="grid" class="grid"></div>
+<div id="tablewrap" class="hide"></div>
+
+<div class="foot">
+Score is a relative momentum ranking (% move weighted by relative volume) for THIS list on THIS refresh —
+it is not a probability or a prediction. Shares/stop are risk-based suggestions from your inputs and each name's
+average daily range; set your real stop on the chart. This is a list of names to STUDY, not signals to buy.
+Re-run every day. Not financial advice.
+</div></div>
+
+<script>
+const DATA = __DATA__;
+const META = __META__;
+const $ = s => document.querySelector(s);
+const S = {
+  side: localStorage.getItem('side') || 'all',
+  layout: localStorage.getItem('layout') || 'cards',
+  sort: localStorage.getItem('sort') || 'rank',
+  filter: '',
+  acct: +localStorage.getItem('acct') || META.acct,
+  risk: +localStorage.getItem('risk') || META.risk,
+  maxpos: +localStorage.getItem('maxpos') || META.maxpos,
+};
+const money = n => n==null? '—' : '$'+Number(n).toLocaleString();
+const mCap = n => n==null? '—' : '$'+(n/1e6).toFixed(0)+'M';
+
+function sized(r){
+  const riskD = S.acct * S.risk/100;
+  const stopPer = r.price * r.stop_pct/100;
+  let sh = stopPer>0 ? Math.floor(riskD/stopPer) : 0;
+  const cap = S.acct * S.maxpos/100;
+  if(sh*r.price > cap) sh = Math.floor(cap/r.price);
+  if(sh<0) sh=0;
+  return {shares: sh, pos: sh*r.price};
+}
+function rows(){
+  let a = DATA.filter(r => S.side==='all' || r.dir===S.side);
+  if(S.filter) a = a.filter(r => r.symbol.toLowerCase().includes(S.filter.toLowerCase()));
+  a.sort((x,y)=> (y[S.sort]??-1e9) - (x[S.sort]??-1e9));
+  return a;
+}
+function rangeMark(r){
+  if(r.day_low==null||r.day_high==null||r.day_high<=r.day_low) return '';
+  const p = Math.max(0,Math.min(100,(r.price-r.day_low)/(r.day_high-r.day_low)*100));
+  return `<div class="rangebar"><i style="left:${p}%"></i></div>`;
+}
+function card(r){
+  const z = sized(r);
+  const cc = r.change>=0?'g':'r';
+  return `<div class="card ${r.dir}">
+   <div class="chd"><div><span class="tk">${r.symbol}</span>
+     <span class="tag ${r.dir}">${r.dir.toUpperCase()}</span></div>
+     <div class="rk">${r.rank}<br><span>SCORE</span></div></div>
+   <div class="why">${r.name}</div>
+   ${rangeMark(r)}
+   <div class="stats">
+     <div class="st"><div class="k">PRICE</div><div class="v">$${r.price.toFixed(2)}</div></div>
+     <div class="st"><div class="k">CHG</div><div class="v ${cc}">${r.change>=0?'+':''}${r.change}%</div></div>
+     <div class="st"><div class="k">RVOL</div><div class="v">${r.rvol??'—'}${r.rvol?'x':''}</div></div>
+     <div class="st"><div class="k">$VOL</div><div class="v">${r.dollar_vol?'$'+(r.dollar_vol/1e6).toFixed(0)+'M':'—'}</div></div>
+     <div class="st"><div class="k">GAP</div><div class="v">${r.gap==null?'—':(r.gap>=0?'+':'')+r.gap+'%'}</div></div>
+     <div class="st"><div class="k">DAY LOW</div><div class="v">${r.day_low?'$'+r.day_low:'—'}</div></div>
+     <div class="st"><div class="k">DAY HIGH</div><div class="v">${r.day_high?'$'+r.day_high:'—'}</div></div>
+     <div class="st"><div class="k">ADR</div><div class="v">${r.adr_pct?r.adr_pct+'%':'—'}</div></div>
+   </div>
+   <div class="size-row">
+     <div class="st"><div class="k">SHARES</div><div class="v">${z.shares.toLocaleString()}</div></div>
+     <div class="st"><div class="k">POSITION</div><div class="v">${money(Math.round(z.pos))}</div></div>
+     <div class="st"><div class="k">STOP ≈</div><div class="v">${r.stop_pct}%</div></div>
+     <div class="st"><div class="k">RISK</div><div class="v">${money(Math.round(S.acct*S.risk/100))}</div></div>
+   </div></div>`;
+}
+function table(list){
+  let h = `<table><tr><th>Ticker</th><th>Dir</th><th>Price</th><th>Chg</th><th>RVol</th>
+   <th>$Vol</th><th>Gap</th><th>Range</th><th>ADR</th><th>Shares</th><th>Score</th></tr>`;
+  for(const r of list){ const z=sized(r);
+    h+=`<tr><td>${r.symbol}</td><td>${r.dir}</td><td>$${r.price.toFixed(2)}</td>
+     <td style="color:${r.change>=0?'var(--green)':'var(--red)'}">${r.change>=0?'+':''}${r.change}%</td>
+     <td>${r.rvol??'—'}</td><td>${r.dollar_vol?'$'+(r.dollar_vol/1e6).toFixed(0)+'M':'—'}</td>
+     <td>${r.gap==null?'—':r.gap+'%'}</td>
+     <td>${r.day_low&&r.day_high?'$'+r.day_low+'–'+r.day_high:'—'}</td>
+     <td>${r.adr_pct?r.adr_pct+'%':'—'}</td><td>${z.shares}</td><td>${r.rank}</td></tr>`; }
+  return h+'</table>';
+}
+function render(){
+  const list = rows();
+  const nL = DATA.filter(r=>r.dir==='long').length, nS = DATA.filter(r=>r.dir==='short').length;
+  $('#sub').textContent = `Updated ${META.generated} · refreshes every ${META.refresh_min} min`;
+  const t = META.tone;
+  $('#badges').innerHTML =
+    `<span class="badge">${nL} long</span><span class="badge">${nS} short</span>`+
+    `<span class="badge ${t.cls}">market ${t.label}${t.change!=null?' · '+(t.change>=0?'+':'')+t.change.toFixed(2)+'%':''}</span>`+
+    `<span class="badge">${META.scanned} scanned</span>`;
+  $('#note').textContent = META.note;
+  $('#sizenote').textContent = `Risking ${money(Math.round(S.acct*S.risk/100))} per trade · capped at ${S.maxpos}% of account`;
+  if(S.layout==='cards'){
+    $('#grid').classList.remove('hide'); $('#tablewrap').classList.add('hide');
+    $('#grid').innerHTML = list.length? list.map(card).join('') :
+      '<div style="color:var(--mut);padding:20px">No names match. Loosen the filters in scanner.py, or it is a quiet day.</div>';
+  } else {
+    $('#grid').classList.add('hide'); $('#tablewrap').classList.remove('hide');
+    $('#tablewrap').innerHTML = table(list);
+  }
+}
+function copySy(side){
+  const s = DATA.filter(r=> side==='all'||r.dir===side).map(r=>r.symbol).join(',');
+  navigator.clipboard.writeText(s).then(()=>{ $('#sizenote').textContent='Copied '+s.split(',').length+' symbols'; });
+}
+document.querySelectorAll('#side button').forEach(b=>b.onclick=()=>{
+  S.side=b.dataset.v; localStorage.setItem('side',S.side);
+  document.querySelectorAll('#side button').forEach(x=>x.classList.toggle('on',x===b)); render();});
+document.querySelectorAll('#layout button').forEach(b=>b.onclick=()=>{
+  S.layout=b.dataset.v; localStorage.setItem('layout',S.layout);
+  document.querySelectorAll('#layout button').forEach(x=>x.classList.toggle('on',x===b)); render();});
+$('#sort').value=S.sort; $('#sort').onchange=e=>{S.sort=e.target.value;localStorage.setItem('sort',S.sort);render();};
+$('#filter').oninput=e=>{S.filter=e.target.value;render();};
+function bindNum(id,key){const el=$('#'+id);el.value=S[key];el.oninput=e=>{S[key]=+e.target.value||0;localStorage.setItem(key,S[key]);render();};}
+bindNum('acct','acct');bindNum('risk','risk');bindNum('maxpos','maxpos');
+document.querySelectorAll('#side button').forEach(x=>x.classList.toggle('on',x.dataset.v===S.side));
+document.querySelectorAll('#layout button').forEach(x=>x.classList.toggle('on',x.dataset.v===S.layout));
+render();
+</script></body></html>"""
+
+
+def render_html(rows, tone, cfg, note):
+    meta = {
+        "generated": dt.datetime.now().strftime("%A %b %d, %I:%M %p"),
+        "refresh_min": cfg["refresh_minutes"],
+        "tone": {"label": tone["label"], "cls": tone["cls"], "change": tone["change"]},
+        "scanned": cfg.get("_scanned", 0),
+        "note": note,
+        "acct": cfg["default_account"], "risk": cfg["default_risk_pct"],
+        "maxpos": cfg["default_max_position_pct"],
+    }
+    html = (TEMPLATE
+            .replace("__DATA__", json.dumps(rows))
+            .replace("__META__", json.dumps(meta))
+            .replace("__REFRESH__", str(cfg["refresh_minutes"] * 60)))
+    return html
+
+
+def write_outputs(rows, tone, cfg, note):
+    os.makedirs(cfg["out_dir"], exist_ok=True)
+    with open(os.path.join(cfg["out_dir"], ".nojekyll"), "a"):
+        pass
+    with open(os.path.join(cfg["out_dir"], "index.html"), "w", encoding="utf-8") as f:
+        f.write(render_html(rows, tone, cfg, note))
+    with open(os.path.join(cfg["out_dir"], "watchlist.csv"), "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["symbol", "dir", "price", "change_pct", "rvol", "dollar_volume",
+                    "gap_pct", "day_low", "day_high", "adr_pct", "score"])
+        for r in rows:
+            w.writerow([r["symbol"], r["dir"], r["price"], r["change"], r["rvol"],
+                        r["dollar_vol"], r["gap"], r["day_low"], r["day_high"],
+                        r["adr_pct"], r["rank"]])
+
+
+# ============================================================
+# Publish to GitHub Pages (gh-pages branch, single rolling commit)
+# ============================================================
+def _git(args, cwd, check=True):
+    return subprocess.run(["git"] + args, cwd=cwd, check=check,
+                          capture_output=True, text=True)
+
+
+def publish(cfg):
+    """Force-push docs/ to the gh-pages branch as one rolling commit.
+    Requires the repo to have a remote 'origin'. See PUBLISHING.md."""
+    repo = _find_repo_root(HERE)
+    if not repo:
+        print("  ! not inside a git repo — skipping publish"); return
+    branch = cfg["publish_branch"]
+    wt = os.path.join(repo, ".ghpages_wt")
+    try:
+        if not os.path.isdir(wt):
+            have = (_git(["branch", "--list", branch], repo).stdout.strip()
+                    or _git(["ls-remote", "--heads", "origin", branch], repo, check=False).stdout.strip())
+            if have:
+                _git(["worktree", "add", wt, branch], repo)
+            else:
+                _git(["worktree", "add", "--detach", wt], repo)
+                _git(["checkout", "--orphan", branch], wt)
+                _git(["reset", "--hard"], wt, check=False)
+        # sync files
+        for fn in ("index.html", "watchlist.csv", ".nojekyll"):
+            src = os.path.join(cfg["out_dir"], fn)
+            if os.path.exists(src):
+                shutil.copy(src, os.path.join(wt, fn))
+        _git(["add", "-A"], wt)
+        has = _git(["rev-parse", "-q", "--verify", "HEAD"], wt, check=False).returncode == 0
+        if has:
+            _git(["commit", "--amend", "-m", "live watchlist", "--no-edit"], wt, check=False)
+        else:
+            _git(["commit", "-m", "live watchlist"], wt)
+        _git(["push", "-f", "origin", branch], wt)
+        print("  published to gh-pages")
+    except subprocess.CalledProcessError as e:
+        print("  ! publish failed:", (e.stderr or str(e))[:160])
+
+
+def _find_repo_root(start):
+    d = start
+    while d != os.path.dirname(d):
+        if os.path.isdir(os.path.join(d, ".git")):
+            return d
+        d = os.path.dirname(d)
+    return None
+
+
+# ============================================================
+# Market hours + loop
+# ============================================================
+def now_et():
+    try:
+        from zoneinfo import ZoneInfo
+        return dt.datetime.now(ZoneInfo("America/New_York"))
+    except Exception:
+        return dt.datetime.utcnow() - dt.timedelta(hours=4)  # rough EDT fallback
+
+
+def market_open_now(cfg):
+    t = now_et()
+    if t.weekday() >= 5:
+        return False
+    o = t.replace(hour=cfg["market_open"][0], minute=cfg["market_open"][1], second=0, microsecond=0)
+    c = t.replace(hour=cfg["market_close"][0], minute=cfg["market_close"][1], second=0, microsecond=0)
+    return o <= t <= c
+
+
+def note_text(cfg, tone):
+    return ("A list of names to study, not buy signals. Do your own chart work: "
+            "mark levels, wait for the setup, size by risk. " + tone["mood"])
+
+
+def scan_once(cfg, publish_it=False):
+    if cfg.get("_demo"):
+        raw = DEMO
+    else:
+        screens = list(cfg["screeners_long"]) + (cfg["screeners_short"] if cfg["include_shorts"] else [])
+        print("Scanning Yahoo screeners...")
+        raw = get_screener_rows(screens)
+    cfg["_scanned"] = len(raw)
+    tone = tone_from(-0.97) if cfg.get("_demo") else get_market_tone(cfg["market_tone_symbol"])
+    # live=True runs enrich() for levels; in demo, enrich() is patched to be offline
+    rows = build_rows(raw, cfg, live=True)
+    write_outputs(rows, tone, cfg, note_text(cfg, tone))
+    print(f"  {len(rows)} names -> {os.path.join(cfg['out_dir'],'index.html')}")
+    if publish_it:
+        publish(cfg)
+    return rows
+
+
+def loop(cfg, publish_it):
+    print(f"Loop started. Rescan every {cfg['refresh_minutes']} min during market hours. Ctrl+C to stop.")
+    while True:
+        try:
+            if market_open_now(cfg):
+                scan_once(cfg, publish_it)
+                time.sleep(cfg["refresh_minutes"] * 60)
+            else:
+                print(f"[{now_et():%a %H:%M} ET] market closed — idling")
+                time.sleep(600)
+        except KeyboardInterrupt:
+            print("\nStopped."); return
+        except Exception as e:
+            print("  ! cycle error:", str(e)[:160]); time.sleep(120)
+
+
+# ============================================================
+# Demo data (Yahoo-shaped)
+# ============================================================
+DEMO = [
+    {"symbol":"BIYA","shortName":"Baiya International","regularMarketPrice":6.44,"regularMarketChangePercent":54.4,"regularMarketVolume":30_000_000,"averageDailyVolume3Month":2_100_000,"marketCap":180_000_000,"quoteType":"EQUITY"},
+    {"symbol":"WLDS","shortName":"Wearable Devices","regularMarketPrice":3.83,"regularMarketChangePercent":20.4,"regularMarketVolume":12_000_000,"averageDailyVolume3Month":1_500_000,"marketCap":60_000_000,"quoteType":"EQUITY"},
+    {"symbol":"PSQH","shortName":"PSQ Holdings","regularMarketPrice":3.70,"regularMarketChangePercent":20.1,"regularMarketVolume":9_000_000,"averageDailyVolume3Month":2_000_000,"marketCap":100_000_000,"quoteType":"EQUITY"},
+    {"symbol":"PRLD","shortName":"Prelude Therapeutics","regularMarketPrice":4.64,"regularMarketChangePercent":19.3,"regularMarketVolume":4_500_000,"averageDailyVolume3Month":1_100_000,"marketCap":250_000_000,"quoteType":"EQUITY"},
+    {"symbol":"TTGT","shortName":"TechTarget Inc","regularMarketPrice":4.47,"regularMarketChangePercent":17.6,"regularMarketVolume":3_000_000,"averageDailyVolume3Month":900_000,"marketCap":130_000_000,"quoteType":"EQUITY"},
+    {"symbol":"ENTX","shortName":"Entera Bio","regularMarketPrice":3.26,"regularMarketChangePercent":-16.8,"regularMarketVolume":5_300_000,"averageDailyVolume3Month":900_000,"marketCap":120_000_000,"quoteType":"EQUITY"},
+    {"symbol":"NCLH","shortName":"Norwegian Cruise","regularMarketPrice":19.22,"regularMarketChangePercent":-8.4,"regularMarketVolume":9_000_000,"averageDailyVolume3Month":1_200_000,"marketCap":900_000_000,"quoteType":"EQUITY"},
+    {"symbol":"SOXL","shortName":"Direxion Semi Bull 3X ETF","regularMarketPrice":40.0,"regularMarketChangePercent":8.0,"regularMarketVolume":80_000_000,"averageDailyVolume3Month":70_000_000,"marketCap":8_000_000_000,"quoteType":"ETF"},
+    {"symbol":"AVGO","shortName":"Broadcom Inc","regularMarketPrice":383.6,"regularMarketChangePercent":6.0,"regularMarketVolume":20_000_000,"averageDailyVolume3Month":18_000_000,"marketCap":1_700_000_000_000,"quoteType":"EQUITY"},
+]
+# demo intraday levels so the page looks complete offline: (low, high, open, prev_close)
+DEMO_LEVELS = {
+    "BIYA":(4.03,6.82,5.50,4.17),"WLDS":(3.10,4.05,3.30,3.18),"PSQH":(3.05,3.90,3.20,3.08),
+    "PRLD":(3.90,4.80,4.05,3.89),"TTGT":(3.80,4.60,3.95,3.80),"ENTX":(3.02,3.96,3.90,3.92),
+    "NCLH":(19.0,21.2,20.9,20.98),
+}
+
+
+def _demo_enrich_patch():
+    """Monkeypatch enrich() to use bundled levels in demo mode (offline)."""
+    def fake(sym):
+        if sym in DEMO_LEVELS:
+            lo, hi, op, prev = DEMO_LEVELS[sym]
+            return {"gap": round((op - prev) / prev * 100, 1), "day_high": hi,
+                    "day_low": lo, "adr_pct": round((hi - lo) / ((hi + lo) / 2) * 100, 1)}
+        return {}
+    return fake
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Momentum day-trading watchlist")
+    ap.add_argument("--once", action="store_true", help="one scan and exit")
+    ap.add_argument("--loop", action="store_true", help="run forever (market-hours aware)")
+    ap.add_argument("--demo", action="store_true", help="offline sample data")
+    ap.add_argument("--publish", action="store_true", help="push to gh-pages after each scan")
+    ap.add_argument("--no-shorts", action="store_true")
+    a = ap.parse_args()
+
+    cfg = dict(CONFIG)
+    if a.no_shorts: cfg["include_shorts"] = False
+    if a.demo:
+        cfg["_demo"] = True
+        global enrich
+        enrich = _demo_enrich_patch()
+
+    if a.loop:
+        loop(cfg, a.publish)
+    else:
+        scan_once(cfg, a.publish)
+        print("Done. Open docs/index.html (or your GitHub Pages URL).")
+
+
+if __name__ == "__main__":
+    main()

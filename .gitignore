@@ -23,3 +23,5 @@ env/
 Thumbs.db
 desktop.ini
 .DS_Store
+momentum_watchlist/docs/
+.ghpages_wt/
