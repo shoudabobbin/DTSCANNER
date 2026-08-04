@@ -365,7 +365,7 @@ footer b{color:var(--dim)}
 
 <div id="cards"></div>
 <div id="tblwrap" hidden></div>
-<div class="empty" id="empty" hidden>Nothing matches.</div>
+<div class="empty" id="empty" hidden></div>
 
 <footer id="foot"></footer>
 </div>
@@ -630,7 +630,13 @@ function render() {
 
   document.getElementById("count").textContent =
     rows.length + " of " + R.length + " shown";
-  document.getElementById("empty").hidden = rows.length > 0;
+  const emptyEl = document.getElementById("empty");
+  emptyEl.hidden = rows.length > 0;
+  // Distinguish "the scan found nothing" from "your filter hid everything" —
+  // the first is a real market answer, the second is a UI state.
+  emptyEl.textContent = R.length === 0
+    ? "Nothing qualified in this scan. The in-play filter requires elevated volume AND an expanded range on the same day — most days, most names have neither."
+    : "Nothing matches the current filter.";
 
   const cw = document.getElementById("cards"), tw = document.getElementById("tblwrap");
   cw.hidden = view !== "cards"; tw.hidden = view === "cards";

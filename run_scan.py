@@ -82,8 +82,13 @@ def main() -> int:
 
     if results.empty:
         print("\nNothing qualified today. That is a normal outcome — most days "
-              "should be quiet. Lower --min-score to inspect what was close.")
-        return 0
+              "should be quiet, and the in-play filter is deliberately strict. "
+              "Run with --min-score 0 or set inplay.enabled: false to see what "
+              "was close.")
+        # Deliberately fall through to write_outputs rather than returning here.
+        # Bailing out leaves the previous page in place, so the site would show
+        # yesterday's names under yesterday's date as if they were today's —
+        # an empty page is the honest answer and the banner still dates it.
 
     written = write_outputs(results, regime, cfg, data_note={
         "bar_date": str(bar_date.date()) if bar_date is not None else None,
@@ -95,11 +100,16 @@ def main() -> int:
 
     from scanner.report import shortlist
     top = shortlist(results, cfg)
-    cols = ["ticker", "side", "pattern", "rank", "tf", "close", "adr_pct",
-            "ext20_adr", "d_vs_20ma", "d_vs_200ma", "entry", "stop", "risk_pct"]
-    cols = [c for c in cols if c in top.columns]
-    print(f"\nMorning list ({len(top)} names):")
-    print(top[cols].to_string(index=False))
+    if top.empty:
+        print("\nMorning list: empty — published an empty page so the site does "
+              "not keep showing the previous run.")
+    else:
+        cols = ["ticker", "side", "pattern", "rank", "rvol", "range_exp", "tf",
+                "close", "adr_pct", "ext20_adr", "gap_pct", "entry", "stop",
+                "risk_pct"]
+        cols = [c for c in cols if c in top.columns]
+        print(f"\nMorning list ({len(top)} names):")
+        print(top[cols].to_string(index=False))
 
     print()
     for kind, path in written.items():
