@@ -78,6 +78,7 @@ def _row_payload(r: pd.Series) -> dict:
             "target_aggressive", "measured_move", "risk_pct",
             "dist_to_trigger_pct", "adr_pct", "ext20_adr", "atr_pct", "score",
             "structure", "volume", "readiness", "accum_ratio", "volume_ratio",
+            "rvol", "range_exp", "gap_pct",
             "height_pct", "touches", "length", "d_vs_20ma", "d_vs_200ma",
             "w_trend", "h_trend", "dollar_volume", "date"]
     out = {k: _clean(r.get(k)) for k in keep}
@@ -335,6 +336,7 @@ footer b{color:var(--dim)}
   </div>
   <select id="sort">
     <option value="rank">Sort: Rank</option>
+    <option value="rvol">Sort: RVOL (most in play)</option>
     <option value="abstrig">Sort: Closest to trigger</option>
     <option value="adr_pct">Sort: ADR% (most movement)</option>
     <option value="risk_pct">Sort: Risk% (tightest first)</option>
@@ -547,9 +549,10 @@ function card(r, i) {
       <div class="cell"><k>Close</k><v>${n(r.close)}</v></div>
       <div class="cell"><k>T1</k><v class="pos">${n(r.target_conservative)}</v></div>
       <div class="cell"><k>T2</k><v class="pos">${n(r.target_aggressive)}</v></div>
+      <div class="cell"><k>RVOL</k><v class="${r.rvol >= 2 ? "pos" : ""}" title="today's volume vs the 50-day average">${n(r.rvol, 2)}×</v></div>
+      <div class="cell"><k>Range</k><v class="${r.range_exp >= 1.5 ? "pos" : ""}" title="today's true range vs the 20-day average">${n(r.range_exp, 2)}×</v></div>
       <div class="cell"><k>To trig</k><v class="${r.dist_to_trigger_pct < 0 ? "neg" : ""}">${n(r.dist_to_trigger_pct, 2)}%</v></div>
       <div class="cell"><k>ADR</k><v>${n(r.adr_pct, 1)}%</v></div>
-      <div class="cell"><k>Ext 20MA</k><v class="mute">${n(r.ext20_adr, 1)}</v></div>
       <div class="cell"><k>vs 20MA</k><v class="${sgn(dir * r.d_vs_20ma)}">${n(r.d_vs_20ma, 1)}%</v></div>
       <div class="cell"><k>vs 200MA</k><v class="${sgn(dir * r.d_vs_200ma)}">${n(r.d_vs_200ma, 1)}%</v></div>
     </div>
@@ -586,11 +589,11 @@ function fallback(text, done) {
 }
 
 const COLS = [["ticker", "Ticker"], ["pattern", "Setup"], ["rank", "Rank"],
+["rvol", "RVOL"], ["range_exp", "Range"],
 ["size", "Size $"], ["entry", "Entry"], ["stop", "Stop"],
 ["target_conservative", "T1"], ["target_aggressive", "T2"],
 ["risk_pct", "Risk%"], ["dist_to_trigger_pct", "To Trig%"],
-["close", "Close"], ["adr_pct", "ADR%"], ["ext20_adr", "Ext"],
-["d_vs_20ma", "vs20"], ["d_vs_200ma", "vs200"]];
+["close", "Close"], ["adr_pct", "ADR%"], ["ext20_adr", "Ext"]];
 
 function table(rows) {
   const head = COLS.map(([k, l]) => `<th data-k="${k}">${l}</th>`).join("");
@@ -616,6 +619,7 @@ function render() {
   }
   const cmp = {
     rank: (a, b) => b.rank - a.rank,
+    rvol: (a, b) => b.rvol - a.rvol,
     score: (a, b) => b.score - a.score,
     adr_pct: (a, b) => b.adr_pct - a.adr_pct,
     risk_pct: (a, b) => a.risk_pct - b.risk_pct,

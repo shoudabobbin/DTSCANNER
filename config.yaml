@@ -5,10 +5,14 @@
 
 universe:
   # Which lists to combine. Options: sp500, sp400, sp600, custom, file
-  # sp600 (small caps) roughly doubles the count of names under $50. Changing
-  # this list auto-invalidates data_cache/universe.json, but the first run after
-  # a change downloads ~600 new price histories, so allow a few extra minutes.
-  sources: [sp500, sp400, sp600]
+  #
+  # sp400 + sp600 = mid and small cap only, ~1000 names. Index membership is
+  # the cap filter: the S&P 500 is excluded outright rather than filtered by a
+  # proxy. Add sp500 back if you want the whole market again.
+  #
+  # Changing this list auto-invalidates data_cache/universe.json. The first run
+  # after a change downloads the new histories, so allow extra time.
+  sources: [sp400, sp600]
 
   # Always-included extras (your own watchlist)
   custom: []
@@ -53,12 +57,36 @@ mtf:
   hourly_cache_hours: 6
   hourly_batch: 50
 
+# -----------------------------------------------------------------------------
+# "In play" — is anything actually happening in this name today?
+#
+# Two conditions, both required. Volume alone spikes on index rebalances and
+# option expiries with the price going nowhere; range alone widens on thin
+# drifting days. Together they mean participation AND movement.
+#
+# Measured on the 2026-07-31 close across 902 names: 103 cleared rvol 1.5,
+# 36 cleared 2.0, and 58 cleared both conditions below. Raise min_rvol to
+# tighten; the list gets short fast above 2.0.
+# -----------------------------------------------------------------------------
+inplay:
+  enabled: true
+  min_rvol: 1.5              # today's volume vs the 50-day average
+  min_range_expansion: 1.2   # today's true range vs the 20-day average
+  rvol_full: 3.0             # rvol scoring full marks in the ranking
+
 # How the morning list is ordered. NOT a prediction - see README.
+#
+# Reweighted for the in-play build. Alignment was cut from 0.40 to 0.20 because
+# FLAWS.md §2 measured it as inert — within-date, names above 0.95 alignment
+# won 52.2% vs 52.3% for everything else. Nothing was gained by weighting it
+# heavily, so that weight moved to in-play, which at least selects for
+# something observable happening today.
 ranking:
-  w_alignment: 0.40      # do hourly / daily / weekly agree with the direction
+  w_inplay: 0.30         # relative volume + range expansion
   w_readiness: 0.30      # is price actually near the trigger
-  w_structure: 0.15      # is the formation clean enough to read
-  w_tradeability: 0.15   # is there enough daily range to be worth watching
+  w_alignment: 0.20      # do hourly / daily / weekly agree with the direction
+  w_tradeability: 0.10   # is there enough daily range to be worth watching
+  w_structure: 0.10      # is the formation clean enough to read
   adr_floor: 1.0         # ADR% scoring 0
   adr_ceiling: 4.0       # ADR% scoring full marks
 
@@ -148,10 +176,19 @@ scoring:
     accum_strong: 0.65      # full points at or above
     accum_weak: 0.45        # zero points at or below
 
-    # Recent volume vs 50d average. Sweet spot is MODERATE, not extreme.
+    # Recent volume vs 50d average.
+    #
+    # The original settings here (ideal 1.0-1.5, near-zero above 2.5) came from
+    # the source writeup's claim that heavy volume means a crowded trade. That
+    # directly contradicts an in-play scanner: it would score a name trading 3x
+    # normal volume at zero, which is the opposite of what you're looking for.
+    # FLAWS.md §2 found no measured value in this feature in either direction,
+    # so the band is simply widened rather than inverted — heavy volume is no
+    # longer punished, but it isn't rewarded on the strength of an unproven
+    # claim either. The in-play block above is what actually selects on volume.
     ratio_ideal_low: 1.0
-    ratio_ideal_high: 1.5
-    ratio_penalty_above: 2.5  # heavier volume than this scores near zero
+    ratio_ideal_high: 3.0
+    ratio_penalty_above: 8.0  # only genuinely absurd volume scores low now
 
     # Volume should contract through the formation (daily timeframe only)
     contraction_full: -0.03   # slope <= this gets full points

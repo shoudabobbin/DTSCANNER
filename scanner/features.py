@@ -77,6 +77,47 @@ def volume_ratio(df: pd.DataFrame, recent: int = 5, base: int = 50) -> float:
     return float(r / b) if b > 0 else 1.0
 
 
+# ------------------------------------------------------------------ "in play"
+
+def rel_volume(df: pd.DataFrame, base: int = 50) -> float:
+    """TODAY's volume against the trailing average — the classic RVOL.
+
+    Distinct from `volume_ratio`, which averages the last five sessions. A
+    five-day mean smooths away the single heavy day that puts a name in play,
+    which is exactly the signal wanted here.
+
+    Returns 1.0 (neutral) when there isn't enough history — note that this
+    default will *pass* a min_rvol filter set below 1.0, so keep thresholds
+    above 1.0 if you want unmeasurable names excluded.
+    """
+    if len(df) < base + 1:
+        return 1.0
+    b = float(df["Volume"].tail(base).mean())
+    return float(df["Volume"].iloc[-1] / b) if b > 0 else 1.0
+
+
+def range_expansion(df: pd.DataFrame, n: int = 20) -> float:
+    """Today's true range against the average of the last n. >1 = wider day.
+
+    Volume alone can spike on an index rebalance or an expiry without the price
+    doing anything. Pairing it with range expansion asks for both participation
+    AND movement, which is much closer to what "in play" actually means.
+    """
+    if len(df) < n + 1:
+        return 1.0
+    tr = float(true_range(df).iloc[-1])
+    avg = float(true_range(df).tail(n).mean())
+    return float(tr / avg) if avg > 0 else 1.0
+
+
+def gap_pct(df: pd.DataFrame) -> float:
+    """Today's open against yesterday's close, signed, in percent."""
+    if len(df) < 2:
+        return 0.0
+    prev = float(df["Close"].iloc[-2])
+    return float((df["Open"].iloc[-1] / prev - 1) * 100) if prev > 0 else 0.0
+
+
 # ------------------------------------------------------------------- position
 
 def pct_from_52w_low(df: pd.DataFrame) -> float:
@@ -172,6 +213,9 @@ def snapshot(df: pd.DataFrame) -> dict:
         "dollar_volume": float((close * df["Volume"]).tail(20).median()),
         "adr_pct": adr_pct(df),
         "volume_ratio": volume_ratio(df),
+        "rvol": rel_volume(df),
+        "range_exp": range_expansion(df),
+        "gap_pct": gap_pct(df),
         "accum_ratio": accumulation_ratio(df),
         "pct_above_52w_low": pct_from_52w_low(df),
         "pct_below_52w_high": pct_from_52w_high(df),

@@ -216,16 +216,47 @@ def estimate_win_rate(pattern: str, score: float, cfg: Cfg):
 
 # ------------------------------------------------------------------------- main
 
+def inplay_score(snap: dict, cfg: Cfg) -> float:
+    """0-1: how much is actually happening in this name today.
+
+    Geometric mean of relative volume and range expansion, each normalised
+    against its threshold. Geometric rather than arithmetic so a name cannot
+    compensate for a dead price with a volume spike — both have to be present.
+    """
+    ip = cfg.get("inplay", {})
+    min_rv = float(ip.get("min_rvol", 1.5))
+    full_rv = max(float(ip.get("rvol_full", 3.0)), min_rv + 1e-6)
+    min_re = float(ip.get("min_range_expansion", 1.2))
+
+    rv = float(snap.get("rvol", 1.0))
+    re = float(snap.get("range_exp", 1.0))
+
+    rv_n = np.clip((rv - min_rv) / (full_rv - min_rv), 0.0, 1.0)
+    re_n = np.clip((re - min_re) / (2.0 - min_re), 0.0, 1.0)
+    return float(np.sqrt(max(rv_n, 1e-9) * max(re_n, 1e-9)))
+
+
+def passes_inplay(snap: dict, cfg: Cfg) -> bool:
+    """Hard gate. Set `inplay.enabled: false` in config.yaml to scan everything."""
+    ip = cfg.get("inplay", {})
+    if not ip.get("enabled", False):
+        return True
+    return (float(snap.get("rvol", 1.0)) >= float(ip.get("min_rvol", 1.5))
+            and float(snap.get("range_exp", 1.0)) >= float(ip.get("min_range_expansion", 1.2)))
+
+
 def watchlist_rank(scored: dict, snap: dict, align: float, cfg: Cfg) -> float:
     """The sort key for the morning list. 0-100.
 
     This is NOT a probability and does not claim predictive power — the
-    backtest showed the pattern score doesn't rank outcomes. It answers a
-    different, narrower question: "how well does this fit what I look at?"
-      * timeframe alignment  - do H/D/W agree with the direction
-      * readiness            - is price actually near the trigger
-      * structure            - is the formation clean enough to read
-      * tradeability         - is there enough daily range to bother
+    backtest showed neither the pattern score nor the previous version of this
+    key ranked outcomes. It answers a narrower question: "how well does this
+    fit what I look at?"
+      * in play      - is volume and range actually elevated today
+      * readiness    - is price near the trigger
+      * alignment    - do H/D/W agree with the direction (measured inert, §2)
+      * tradeability - is there enough daily range to bother
+      * structure    - is the formation clean enough to read
     """
     w = cfg.get("ranking", {})
     lo = float(w.get("adr_floor", 1.0))
@@ -233,10 +264,11 @@ def watchlist_rank(scored: dict, snap: dict, align: float, cfg: Cfg) -> float:
     adr = float(snap.get("adr_pct", 0.0))
     tradeability = float(np.clip((adr - lo) / max(hi - lo, 1e-6), 0, 1))
 
-    r = (float(w.get("w_alignment", 0.40)) * align
+    r = (float(w.get("w_inplay", 0.30)) * inplay_score(snap, cfg)
          + float(w.get("w_readiness", 0.30)) * (scored["readiness"] / 10.0)
-         + float(w.get("w_structure", 0.15)) * (scored["structure"] / 16.0)
-         + float(w.get("w_tradeability", 0.15)) * tradeability)
+         + float(w.get("w_alignment", 0.20)) * align
+         + float(w.get("w_tradeability", 0.10)) * tradeability
+         + float(w.get("w_structure", 0.10)) * (scored["structure"] / 16.0))
     return round(r * 100, 1)
 
 

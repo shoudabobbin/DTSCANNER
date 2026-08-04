@@ -22,12 +22,13 @@ from .mtf import (alignment, arrows, build_context, extension_adr, fetch_hourly,
                   passes_soft_ma)
 from .patterns import detect_all
 from .regime import classify
-from .scoring import score_detection, watchlist_rank
+from .scoring import passes_inplay, score_detection, watchlist_rank
 
 COLUMNS = [
     "date", "ticker", "side", "pattern", "rank", "align", "tf",
     "close", "trigger", "entry", "stop", "target_conservative",
     "target_aggressive", "measured_move", "risk_pct", "dist_to_trigger_pct",
+    "rvol", "range_exp", "gap_pct",
     "adr_pct", "ext20_adr", "atr_pct", "score", "structure", "volume", "readiness",
     "accum_ratio", "volume_ratio", "height_pct", "touches", "length",
     "d_vs_20ma", "d_vs_200ma", "w_trend", "h_trend", "regime", "dollar_volume",
@@ -68,6 +69,11 @@ def scan_frames(frames: dict[str, pd.DataFrame], bench: pd.DataFrame | None,
         except Exception:
             continue
         if snap["adr_pct"] < min_adr:
+            continue
+        # "In play" gate: elevated volume AND an expanded range today. Applied
+        # before detection so the detectors only ever run on names where
+        # something is happening. Disable via inplay.enabled in config.yaml.
+        if not passes_inplay(snap, cfg):
             continue
 
         dets = detect_all(df, cfg)
@@ -133,6 +139,9 @@ def scan_frames(frames: dict[str, pd.DataFrame], bench: pd.DataFrame | None,
             "tf": arrows(ctx),
             "close": round(snap["close"], 2),
             "adr_pct": round(snap["adr_pct"], 2),
+            "rvol": round(snap["rvol"], 2),
+            "range_exp": round(snap["range_exp"], 2),
+            "gap_pct": round(snap["gap_pct"], 2),
             "ext20_adr": round(r["ext20"], 2),
             "atr_pct": round(snap["atr_pct"] * 100, 2),
             "accum_ratio": round(snap["accum_ratio"], 3),

@@ -611,6 +611,26 @@ CONFIG_KEY = {
 }
 
 
+def _is_enabled(name: str, cfg: Cfg) -> bool:
+    """Is this detector switched on?
+
+    A short detector reuses its long counterpart's thresholds, but it can now
+    be enabled/disabled on its own: an exact-name block in config.yaml wins,
+    and only if there isn't one does it inherit the counterpart's flag. So
+
+        patterns:
+          three_crows:
+            enabled: false
+
+    turns off three_crows while leaving three_soldiers running, which the
+    original CONFIG_KEY-only lookup made impossible.
+    """
+    own = cfg.patterns.get(name)
+    if isinstance(own, dict) and "enabled" in own:
+        return bool(own["enabled"])
+    return bool(cfg.patterns.get(CONFIG_KEY.get(name, name), {}).get("enabled", False))
+
+
 def detect_all(df: pd.DataFrame, cfg: Cfg) -> list[dict]:
     """Run every enabled detector against one ticker's history."""
     dirs = cfg.get("direction", {"long": True, "short": True})
@@ -619,7 +639,7 @@ def detect_all(df: pd.DataFrame, cfg: Cfg) -> list[dict]:
         side = SIDE[name]
         if not dirs.get(side, True):
             continue
-        if not cfg.patterns.get(CONFIG_KEY.get(name, name), {}).get("enabled", False):
+        if not _is_enabled(name, cfg):
             continue
         try:
             res = fn(df, cfg)
