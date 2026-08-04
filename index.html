@@ -1,0 +1,226 @@
+<!DOCTYPE html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="300">
+<title>Momentum Watchlist</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#15202b;--mut:#6b7480;--line:#e6e8ec;
+--green:#0ca35a;--greenbg:#e8f6ee;--red:#d83a45;--redbg:#fbe9ea;--blue:#1f3a5f;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:14px}
+.wrap{max-width:1180px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:0 0 2px}
+.sub{color:var(--mut);font-size:12px;margin-bottom:10px}
+.badges{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.badge{font-size:12px;padding:3px 10px;border-radius:20px;background:#eef0f3;color:#475060}
+.badge.bull{background:var(--greenbg);color:var(--green)}
+.badge.bear{background:var(--redbg);color:var(--red)}
+.note{background:#fff7e6;border:1px solid #ffe2a8;color:#7a5a10;font-size:12px;
+padding:8px 12px;border-radius:8px;margin-bottom:12px}
+.bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;background:var(--card);
+border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:12px}
+.seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{border:0;background:#fff;padding:6px 12px;font-size:13px;cursor:pointer;color:var(--mut)}
+.seg button.on{background:var(--blue);color:#fff}
+select,input{border:1px solid var(--line);border-radius:8px;padding:6px 8px;font-size:13px;background:#fff;color:var(--ink)}
+.size input{width:70px}
+.size label{font-size:11px;color:var(--mut);margin-right:3px}
+.spacer{flex:1}
+button.copy{border:1px solid var(--line);background:#fff;border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer;color:var(--blue)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:12px}
+.card{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--mut);
+border-radius:12px;padding:12px}
+.card.long{border-left-color:var(--green)} .card.short{border-left-color:var(--red)}
+.chd{display:flex;justify-content:space-between;align-items:flex-start}
+.tk{font-size:17px;font-weight:700}
+.tag{font-size:10px;font-weight:700;padding:2px 6px;border-radius:5px;margin-left:6px;vertical-align:2px}
+.tag.long{background:var(--greenbg);color:var(--green)} .tag.short{background:var(--redbg);color:var(--red)}
+.tag.play{background:var(--greenbg);color:var(--green)} .tag.mover{background:#eef0f3;color:var(--mut)}
+.tag.news{background:#fff3d6;color:#8a6d00}
+.why .hl{color:var(--blue)}
+.rk{font-size:16px;font-weight:700;text-align:right;line-height:1}
+.rk span{font-size:9px;color:var(--mut);font-weight:500;letter-spacing:.05em}
+.why{font-size:12px;color:var(--mut);margin:3px 0 8px}
+.rangebar{height:6px;background:#eef0f3;border-radius:4px;position:relative;margin:10px 2px 12px}
+.rangebar i{position:absolute;top:-3px;width:2px;height:12px;background:var(--blue)}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px 6px}
+.st .k{font-size:9px;color:var(--mut);letter-spacing:.04em}
+.st .v{font-size:13px;font-weight:600}
+.st .v.g{color:var(--green)} .st .v.r{color:var(--red)}
+.size-row{margin-top:10px;padding-top:10px;border-top:1px dashed var(--line);
+display:grid;grid-template-columns:repeat(4,1fr);gap:8px 6px}
+table{width:100%;border-collapse:collapse;font-size:13px;background:var(--card);border-radius:10px;overflow:hidden}
+th,td{padding:8px 9px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+th{background:var(--blue);color:#fff;font-size:11px;font-weight:600}
+.hide{display:none}
+.foot{color:var(--mut);font-size:11px;margin-top:14px;line-height:1.6}
+@media(max-width:520px){.grid{grid-template-columns:1fr}.wrap{padding:10px}}
+</style></head><body><div class="wrap">
+<h1>Momentum Watchlist</h1>
+<div class="sub" id="sub"></div>
+<div class="badges" id="badges"></div>
+<div class="note" id="note"></div>
+
+<div class="bar">
+  <div class="seg" id="side"><button data-v="all" class="on">All</button>
+    <button data-v="long">Long</button><button data-v="short">Short</button></div>
+  <div class="seg" id="aplus"><button data-v="off" class="on">All names</button>
+    <button data-v="on">A+ only</button></div>
+  <div class="seg" id="layout"><button data-v="cards" class="on">Cards</button>
+    <button data-v="table">Table</button></div>
+  <select id="sort">
+    <option value="rank">Sort: Score</option>
+    <option value="change">Sort: % Change</option>
+    <option value="rvol">Sort: Rel Volume</option>
+    <option value="dollar_vol">Sort: $ Volume</option>
+    <option value="price">Sort: Price</option></select>
+  <input id="filter" placeholder="Filter ticker...">
+  <div class="spacer"></div>
+  <div class="size"><label>Account $</label><input id="acct" type="number"></div>
+  <div class="size"><label>Risk %</label><input id="risk" type="number" step="0.1"></div>
+  <div class="size"><label>Max pos %</label><input id="maxpos" type="number"></div>
+</div>
+<div class="bar" style="margin-top:-6px">
+  <span style="font-size:12px;color:var(--mut)">Copy symbols to ThinkorSwim:</span>
+  <button class="copy" onclick="copySy('all')">All</button>
+  <button class="copy" onclick="copySy('long')">Longs</button>
+  <button class="copy" onclick="copySy('short')">Shorts</button>
+  <span id="sizenote" style="font-size:12px;color:var(--mut)"></span>
+</div>
+
+<div id="grid" class="grid"></div>
+<div id="tablewrap" class="hide"></div>
+
+<div class="foot">
+<b>IN PLAY</b> = your full momentum spec: up/down 10%+, on pace for 5x+ normal volume, still moving intraday, and
+(when required) a news catalyst. <b>MOVER</b> = a mover that misses one of those. Hit <b>A+ only</b> to see just the
+IN PLAY names. <b>REL VOL</b> is time-adjusted — "on pace for Nx a normal day," so 5x means something at 9:45am too.
+<b>SINCE OPEN</b> tells a live mover from a gap-and-die. <b>NEWS</b> shows the latest headline (free-source, best-effort —
+it can miss or lag, and doesn't prove the news is the cause). Score orders THIS list on THIS refresh — not a
+prediction. Shares/stop are risk-based suggestions; set your real stop on the chart. Names to STUDY, not signals to buy. Not financial advice.
+</div></div>
+
+<script>
+const DATA = [{"symbol": "ALEC", "name": "Alector, Inc.", "dir": "long", "in_play": true, "has_news": false, "headline": "GSK ends brain drug alliance with Alector", "price": 1.91, "change": 28.2, "rvol": 4.4, "adj_rvol": 5.0, "dollar_vol": 6109595, "gap": 0.0, "since_open": 28.2, "range_pos": 0.84, "day_high": 1.99, "day_low": 1.48, "adr_pct": 7.6, "stop_pct": 3.8, "rank": 99.0}, {"symbol": "HTZ", "name": "Hertz Global Holdings, Inc", "dir": "long", "in_play": true, "has_news": true, "headline": "Hertz Earnings Might Be a Problem for Short Sellers. The Stock Is Soaring.", "price": 2.13, "change": 36.9, "rvol": 5.6, "adj_rvol": 6.3, "dollar_vol": 203788380, "gap": 16.7, "since_open": 17.3, "range_pos": 0.9, "day_high": 2.19, "day_low": 1.63, "adr_pct": 9.7, "stop_pct": 4.8, "rank": 93.6}, {"symbol": "KRO", "name": "Kronos Worldwide Inc", "dir": "long", "in_play": true, "has_news": true, "headline": "Kronos Worldwide (KRO) Surpasses Q2 Earnings and Revenue Estimates", "price": 8.34, "change": 34.2, "rvol": 5.4, "adj_rvol": 6.1, "dollar_vol": 14514052, "gap": 14.3, "since_open": 17.4, "range_pos": 0.76, "day_high": 8.71, "day_low": 7.14, "adr_pct": 6.3, "stop_pct": 3.1, "rank": 91.7}, {"symbol": "HNST", "name": "The Honest Company, Inc.", "dir": "long", "in_play": true, "has_news": true, "headline": "The Honest Co Inc (HNST) (Q2 2026) Earnings Call Highlights: Record Margins and Strategic ...", "price": 5.35, "change": 39.0, "rvol": 12.4, "adj_rvol": 13.9, "dollar_vol": 97228674, "gap": 28.6, "since_open": 8.1, "range_pos": 0.51, "day_high": 5.84, "day_low": 4.84, "adr_pct": 4.9, "stop_pct": 2.5, "rank": 80.1}, {"symbol": "FIP", "name": "FTAI Infrastructure Inc.", "dir": "long", "in_play": false, "has_news": true, "headline": "FTAI Infrastructure Inc (FIP) (Q2 2026) Earnings Call Highlights: Record EBITDA and Strategic .", "price": 4.04, "change": 18.3, "rvol": 2.0, "adj_rvol": 2.3, "dollar_vol": 8704640, "gap": -8.8, "since_open": 29.7, "range_pos": 0.98, "day_high": 4.06, "day_low": 3.06, "adr_pct": 8.3, "stop_pct": 4.2, "rank": 96.0}, {"symbol": "ACDC", "name": "ProFrac Holding Corp.", "dir": "long", "in_play": false, "has_news": true, "headline": "ProFrac Q2 Earnings Call Highlights", "price": 4.57, "change": 1.3, "rvol": 2.0, "adj_rvol": 2.3, "dollar_vol": 13304404, "gap": -22.1, "since_open": 30.1, "range_pos": 0.96, "day_high": 4.61, "day_low": 3.51, "adr_pct": 9.2, "stop_pct": 4.6, "rank": 92.6}, {"symbol": "OPRT", "name": "Oportun Financial Corporation", "dir": "long", "in_play": false, "has_news": true, "headline": "Oportun Financial Corp (OPRT) (Q2 2026) Earnings Call Highlights: Strong Profitability and ...", "price": 8.07, "change": 33.1, "rvol": 4.0, "adj_rvol": 4.5, "dollar_vol": 16586752, "gap": 11.2, "since_open": 19.7, "range_pos": 0.85, "day_high": 8.3, "day_low": 6.74, "adr_pct": 5.4, "stop_pct": 2.7, "rank": 92.4}, {"symbol": "SGHT", "name": "Sight Sciences, Inc.", "dir": "long", "in_play": false, "has_news": true, "headline": "Sight Sciences Inc (SGHT) (Q2 2026) Earnings Call Highlights: Record Revenue Growth and Raised ", "price": 6.87, "change": 23.7, "rvol": 3.6, "adj_rvol": 4.0, "dollar_vol": 4542584, "gap": 4.3, "since_open": 18.6, "range_pos": 0.78, "day_high": 7.17, "day_low": 5.79, "adr_pct": 8.0, "stop_pct": 4.0, "rank": 86.5}, {"symbol": "TASK", "name": "TaskUs, Inc.", "dir": "long", "in_play": false, "has_news": true, "headline": "TaskUs Q2 Earnings Call Highlights", "price": 8.04, "change": 27.1, "rvol": 3.7, "adj_rvol": 4.2, "dollar_vol": 21606323, "gap": 11.2, "since_open": 14.4, "range_pos": 0.84, "day_high": 8.22, "day_low": 7.02, "adr_pct": 6.6, "stop_pct": 3.3, "rank": 81.5}, {"symbol": "CION", "name": "CION Investment Corporation", "dir": "long", "in_play": false, "has_news": true, "headline": "CION Investment Corporation Q2 2026 Earnings Call Summary", "price": 7.37, "change": 18.3, "rvol": 2.9, "adj_rvol": 3.3, "dollar_vol": 11961191, "gap": 7.5, "since_open": 10.0, "range_pos": 0.87, "day_high": 7.49, "day_low": 6.6, "adr_pct": 3.5, "stop_pct": 2.0, "rank": 70.5}, {"symbol": "FUN", "name": "Six Flags Entertainment Corpora", "dir": "short", "in_play": false, "has_news": true, "headline": "Six Flags Entertainment Corp (FUN) (Q2 2026) Earnings Call Highlights: Attendance Surges 4% and", "price": 15.77, "change": -15.9, "rvol": 3.2, "adj_rvol": 3.6, "dollar_vol": 113634295, "gap": -6.6, "since_open": -10.0, "range_pos": 0.29, "day_high": 17.72, "day_low": 14.97, "adr_pct": 5.6, "stop_pct": 2.8, "rank": 69.6}, {"symbol": "IOVA", "name": "Iovance Biotherapeutics, Inc.", "dir": "long", "in_play": false, "has_news": true, "headline": "IOVA Stock Heads For Best Day In Over 6 Years \u2013 Buyout Buzz Builds After Blowout Q2", "price": 6.19, "change": 42.6, "rvol": 4.1, "adj_rvol": 4.6, "dollar_vol": 381852344, "gap": 37.2, "since_open": 4.0, "range_pos": 0.74, "day_high": 6.39, "day_low": 5.63, "adr_pct": 7.7, "stop_pct": 3.9, "rank": 68.0}, {"symbol": "GDRX", "name": "GoodRx Holdings, Inc.", "dir": "long", "in_play": false, "has_news": true, "headline": "GoodRx Q2 Earnings Call Highlights", "price": 3.73, "change": 14.1, "rvol": 2.3, "adj_rvol": 2.6, "dollar_vol": 11950270, "gap": 4.6, "since_open": 9.1, "range_pos": 0.85, "day_high": 3.81, "day_low": 3.23, "adr_pct": 5.5, "stop_pct": 2.8, "rank": 66.7}, {"symbol": "PEPG", "name": "PepGen Inc.", "dir": "long", "in_play": false, "has_news": false, "headline": "PepGen (PEPG) Loses 14.3% in 4 Weeks, Here's Why a Trend Reversal May be Around the Corner", "price": 2.29, "change": 15.5, "rvol": 3.7, "adj_rvol": 4.1, "dollar_vol": 6918611, "gap": 6.1, "since_open": 8.9, "range_pos": 0.69, "day_high": 2.39, "day_low": 2.06, "adr_pct": 9.2, "stop_pct": 4.6, "rank": 65.6}, {"symbol": "PTON", "name": "Peloton Interactive, Inc.", "dir": "short", "in_play": false, "has_news": true, "headline": "Planet Fitness Cuts Adjusted Earnings Outlook; Peloton Issues Downbeat Revenue Guidance", "price": 5.45, "change": -16.5, "rvol": 2.1, "adj_rvol": 2.4, "dollar_vol": 137323831, "gap": -9.5, "since_open": -7.7, "range_pos": 0.0, "day_high": 6.0, "day_low": 5.45, "adr_pct": 4.1, "stop_pct": 2.0, "rank": 65.6}, {"symbol": "TPVG", "name": "TriplePoint Venture Growth BDC ", "dir": "long", "in_play": false, "has_news": true, "headline": "TriplePoint Venture Growth BDC Corp (TPVG) (Q2 2026) Earnings Call Highlights: Strategic ...", "price": 5.22, "change": 13.0, "rvol": 2.0, "adj_rvol": 2.2, "dollar_vol": 2881956, "gap": 4.1, "since_open": 8.5, "range_pos": 0.95, "day_high": 5.24, "day_low": 4.8, "adr_pct": 3.7, "stop_pct": 2.0, "rank": 65.3}, {"symbol": "TROX", "name": "Tronox Holdings plc", "dir": "long", "in_play": false, "has_news": true, "headline": "Tronox (TROX) Reports Q2 Loss, Beats Revenue Estimates", "price": 7.04, "change": 20.3, "rvol": 1.3, "adj_rvol": 1.5, "dollar_vol": 26384983, "gap": 10.9, "since_open": 8.5, "range_pos": 0.94, "day_high": 7.11, "day_low": 6.0, "adr_pct": 6.8, "stop_pct": 3.4, "rank": 64.1}, {"symbol": "ABCL", "name": "AbCellera Biologics Inc.", "dir": "long", "in_play": false, "has_news": true, "headline": "AbCellera Biologics Inc (ABCL) (Q2 2026) Earnings Call Highlights: Strong Pipeline Progress and", "price": 6.5, "change": 9.8, "rvol": 0.9, "adj_rvol": 1.0, "dollar_vol": 43848779, "gap": -1.7, "since_open": 11.7, "range_pos": 0.96, "day_high": 6.54, "day_low": 5.62, "adr_pct": 7.5, "stop_pct": 3.8, "rank": 63.6}, {"symbol": "PYXS", "name": "Pyxis Oncology, Inc.", "dir": "long", "in_play": false, "has_news": false, "headline": "Pyxis Oncology Secures Up to $114 Million Private Placement", "price": 3.56, "change": 13.7, "rvol": 0.8, "adj_rvol": 0.9, "dollar_vol": 2748818, "gap": 0.0, "since_open": 13.7, "range_pos": 0.97, "day_high": 3.58, "day_low": 3.13, "adr_pct": 9.6, "stop_pct": 4.8, "rank": 62.7}, {"symbol": "MATV", "name": "Mativ Holdings, Inc.", "dir": "long", "in_play": false, "has_news": true, "headline": "Mativ Holdings (MATV) Beats Q2 Earnings and Revenue Estimates", "price": 11.45, "change": 19.6, "rvol": 1.7, "adj_rvol": 1.9, "dollar_vol": 9536006, "gap": 12.2, "since_open": 6.7, "range_pos": 0.77, "day_high": 11.85, "day_low": 10.1, "adr_pct": 4.8, "stop_pct": 2.4, "rank": 62.3}, {"symbol": "GTM", "name": "ZoomInfo Technologies Inc.", "dir": "long", "in_play": false, "has_news": true, "headline": "Klaviyo Demand Remains Resilient, Statsig Drives Amplitude Growth, ZoomInfo Recovery Still Unpr", "price": 4.13, "change": 13.0, "rvol": 1.0, "adj_rvol": 1.1, "dollar_vol": 50270030, "gap": 2.7, "since_open": 10.0, "range_pos": 0.8, "day_high": 4.23, "day_low": 3.76, "adr_pct": 6.6, "stop_pct": 3.3, "rank": 62.2}, {"symbol": "VISN", "name": "Vistance Networks, Inc.", "dir": "short", "in_play": false, "has_news": false, "headline": "Navigating Vistance Networks\u2019 (VISN) Asset Sales and Dividends", "price": 10.28, "change": -16.8, "rvol": 2.5, "adj_rvol": 2.9, "dollar_vol": 159009621, "gap": -11.2, "since_open": -6.3, "range_pos": 0.07, "day_high": 11.18, "day_low": 10.21, "adr_pct": 3.5, "stop_pct": 2.0, "rank": 61.8}, {"symbol": "RMAX", "name": "RE/MAX Holdings, Inc.", "dir": "long", "in_play": false, "has_news": false, "headline": "Why RE/MAX (RMAX) Shares Are Trading Lower Today", "price": 10.76, "change": 10.9, "rvol": 1.3, "adj_rvol": 1.4, "dollar_vol": 5371381, "gap": 0.5, "since_open": 10.4, "range_pos": 0.84, "day_high": 11.01, "day_low": 9.46, "adr_pct": 5.6, "stop_pct": 2.8, "rank": 61.6}, {"symbol": "FF", "name": "FutureFuel Corp.", "dir": "long", "in_play": false, "has_news": false, "headline": "DWF Executive Warns Strategy and BitMine Could Trigger the Biggest Crypto Crash in History", "price": 5.39, "change": 8.9, "rvol": 1.3, "adj_rvol": 1.5, "dollar_vol": 2149133, "gap": 0.4, "since_open": 8.5, "range_pos": 0.98, "day_high": 5.4, "day_low": 4.89, "adr_pct": 4.7, "stop_pct": 2.4, "rank": 60.0}];
+const META = {"generated": "Thursday Aug 06, 03:10 PM", "refresh_min": 5, "tone": {"label": "Flat", "cls": "flat", "change": -0.15404718911955786}, "scanned": 459, "note": "A list of names to study, not buy signals. Do your own chart work: mark levels, wait for the setup, size by risk. No edge from the tape. Trade only A+ setups.", "acct": 2500, "risk": 1.0, "maxpos": 25};
+const $ = s => document.querySelector(s);
+const S = {
+  side: localStorage.getItem('side') || 'all',
+  layout: localStorage.getItem('layout') || 'cards',
+  sort: localStorage.getItem('sort') || 'rank',
+  aplus: localStorage.getItem('aplus')==='on',
+  filter: '',
+  acct: +localStorage.getItem('acct') || META.acct,
+  risk: +localStorage.getItem('risk') || META.risk,
+  maxpos: +localStorage.getItem('maxpos') || META.maxpos,
+};
+const money = n => n==null? '—' : '$'+Number(n).toLocaleString();
+const mCap = n => n==null? '—' : '$'+(n/1e6).toFixed(0)+'M';
+
+function sized(r){
+  const riskD = S.acct * S.risk/100;
+  const stopPer = r.price * r.stop_pct/100;
+  let sh = stopPer>0 ? Math.floor(riskD/stopPer) : 0;
+  const cap = S.acct * S.maxpos/100;
+  if(sh*r.price > cap) sh = Math.floor(cap/r.price);
+  if(sh<0) sh=0;
+  return {shares: sh, pos: sh*r.price};
+}
+function rows(){
+  let a = DATA.filter(r => S.side==='all' || r.dir===S.side);
+  if(S.aplus) a = a.filter(r => r.in_play);
+  if(S.filter) a = a.filter(r => r.symbol.toLowerCase().includes(S.filter.toLowerCase()));
+  a.sort((x,y)=> (y[S.sort]??-1e9) - (x[S.sort]??-1e9));
+  return a;
+}
+function rangeMark(r){
+  if(r.day_low==null||r.day_high==null||r.day_high<=r.day_low) return '';
+  const p = Math.max(0,Math.min(100,(r.price-r.day_low)/(r.day_high-r.day_low)*100));
+  return `<div class="rangebar"><i style="left:${p}%"></i></div>`;
+}
+function card(r){
+  const z = sized(r);
+  const cc = r.change>=0?'g':'r';
+  return `<div class="card ${r.dir}">
+   <div class="chd"><div><span class="tk">${r.symbol}</span>
+     <span class="tag ${r.dir}">${r.dir.toUpperCase()}</span>
+     <span class="tag ${r.in_play?'play':'mover'}">${r.in_play?'IN PLAY':'MOVER'}</span>
+     ${r.has_news?'<span class="tag news">NEWS</span>':''}</div>
+     <div class="rk">${r.rank}<br><span>SCORE</span></div></div>
+   <div class="why">${r.name}${r.headline?' &middot; <span class="hl">'+r.headline+'</span>':''}</div>
+   ${rangeMark(r)}
+   <div class="stats">
+     <div class="st"><div class="k">PRICE</div><div class="v">$${r.price.toFixed(2)}</div></div>
+     <div class="st"><div class="k">CHG (GAP)</div><div class="v ${cc}">${r.change>=0?'+':''}${r.change}%</div></div>
+     <div class="st"><div class="k">SINCE OPEN</div><div class="v ${r.since_open==null?'':((r.since_open>=0)===(r.dir==='long')?'g':'r')}">${r.since_open==null?'—':(r.since_open>=0?'+':'')+r.since_open+'%'}</div></div>
+     <div class="st"><div class="k">REL VOL</div><div class="v">${r.adj_rvol??'—'}${r.adj_rvol?'x':''}</div></div>
+     <div class="st"><div class="k">$VOL</div><div class="v">${r.dollar_vol?'$'+(r.dollar_vol/1e6).toFixed(0)+'M':'—'}</div></div>
+     <div class="st"><div class="k">DAY LOW</div><div class="v">${r.day_low?'$'+r.day_low:'—'}</div></div>
+     <div class="st"><div class="k">DAY HIGH</div><div class="v">${r.day_high?'$'+r.day_high:'—'}</div></div>
+     <div class="st"><div class="k">ADR</div><div class="v">${r.adr_pct?r.adr_pct+'%':'—'}</div></div>
+   </div>
+   <div class="size-row">
+     <div class="st"><div class="k">SHARES</div><div class="v">${z.shares.toLocaleString()}</div></div>
+     <div class="st"><div class="k">POSITION</div><div class="v">${money(Math.round(z.pos))}</div></div>
+     <div class="st"><div class="k">STOP ≈</div><div class="v">${r.stop_pct}%</div></div>
+     <div class="st"><div class="k">RISK</div><div class="v">${money(Math.round(S.acct*S.risk/100))}</div></div>
+   </div></div>`;
+}
+function table(list){
+  let h = `<table><tr><th>Ticker</th><th>Dir</th><th>Price</th><th>Chg (gap)</th><th>Since open</th><th>Rel Vol</th>
+   <th>$Vol</th><th>Range</th><th>ADR</th><th>Shares</th><th>Score</th></tr>`;
+  for(const r of list){ const z=sized(r);
+    const soc = r.since_open==null?'var(--mut)':(((r.since_open>=0)===(r.dir==='long'))?'var(--green)':'var(--red)');
+    h+=`<tr><td>${r.symbol}${r.has_news?' <span title="'+(r.headline||'news')+'" style="color:var(--green)">&#9679;</span>':''}</td><td>${r.dir}</td><td>$${r.price.toFixed(2)}</td>
+     <td style="color:${r.change>=0?'var(--green)':'var(--red)'}">${r.change>=0?'+':''}${r.change}%</td>
+     <td style="color:${soc}">${r.since_open==null?'—':(r.since_open>=0?'+':'')+r.since_open+'%'}</td>
+     <td>${r.adj_rvol??'—'}${r.adj_rvol?'x':''}</td><td>${r.dollar_vol?'$'+(r.dollar_vol/1e6).toFixed(0)+'M':'—'}</td>
+     <td>${r.day_low&&r.day_high?'$'+r.day_low+'–'+r.day_high:'—'}</td>
+     <td>${r.adr_pct?r.adr_pct+'%':'—'}</td><td>${z.shares}</td><td>${r.rank}</td></tr>`; }
+  return h+'</table>';
+}
+function render(){
+  const list = rows();
+  const nL = DATA.filter(r=>r.dir==='long').length, nS = DATA.filter(r=>r.dir==='short').length;
+  const nP = DATA.filter(r=>r.in_play).length;
+  $('#sub').textContent = `Updated ${META.generated} · refreshes every ${META.refresh_min} min`;
+  const t = META.tone;
+  $('#badges').innerHTML =
+    `<span class="badge bull">${nP} in play</span>`+
+    `<span class="badge">${nL} long</span><span class="badge">${nS} short</span>`+
+    `<span class="badge ${t.cls}">market ${t.label}${t.change!=null?' · '+(t.change>=0?'+':'')+t.change.toFixed(2)+'%':''}</span>`+
+    `<span class="badge">${META.scanned} scanned</span>`;
+  $('#note').textContent = META.note;
+  $('#sizenote').textContent = `Risking ${money(Math.round(S.acct*S.risk/100))} per trade · capped at ${S.maxpos}% of account`;
+  if(S.layout==='cards'){
+    $('#grid').classList.remove('hide'); $('#tablewrap').classList.add('hide');
+    $('#grid').innerHTML = list.length? list.map(card).join('') :
+      '<div style="color:var(--mut);padding:20px">Nothing eligible right now (pre-market or a very quiet tape). Once a good list has been saved, the page shows it automatically instead of going blank.</div>';
+  } else {
+    $('#grid').classList.add('hide'); $('#tablewrap').classList.remove('hide');
+    $('#tablewrap').innerHTML = table(list);
+  }
+}
+function copySy(side){
+  const s = DATA.filter(r=> side==='all'||r.dir===side).map(r=>r.symbol).join(',');
+  navigator.clipboard.writeText(s).then(()=>{ $('#sizenote').textContent='Copied '+s.split(',').length+' symbols'; });
+}
+document.querySelectorAll('#side button').forEach(b=>b.onclick=()=>{
+  S.side=b.dataset.v; localStorage.setItem('side',S.side);
+  document.querySelectorAll('#side button').forEach(x=>x.classList.toggle('on',x===b)); render();});
+document.querySelectorAll('#layout button').forEach(b=>b.onclick=()=>{
+  S.layout=b.dataset.v; localStorage.setItem('layout',S.layout);
+  document.querySelectorAll('#layout button').forEach(x=>x.classList.toggle('on',x===b)); render();});
+document.querySelectorAll('#aplus button').forEach(b=>b.onclick=()=>{
+  S.aplus=(b.dataset.v==='on'); localStorage.setItem('aplus',b.dataset.v);
+  document.querySelectorAll('#aplus button').forEach(x=>x.classList.toggle('on',x===b)); render();});
+$('#sort').value=S.sort; $('#sort').onchange=e=>{S.sort=e.target.value;localStorage.setItem('sort',S.sort);render();};
+$('#filter').oninput=e=>{S.filter=e.target.value;render();};
+function bindNum(id,key){const el=$('#'+id);el.value=S[key];el.oninput=e=>{S[key]=+e.target.value||0;localStorage.setItem(key,S[key]);render();};}
+bindNum('acct','acct');bindNum('risk','risk');bindNum('maxpos','maxpos');
+document.querySelectorAll('#side button').forEach(x=>x.classList.toggle('on',x.dataset.v===S.side));
+document.querySelectorAll('#layout button').forEach(x=>x.classList.toggle('on',x.dataset.v===S.layout));
+document.querySelectorAll('#aplus button').forEach(x=>x.classList.toggle('on',x.dataset.v===(S.aplus?'on':'off')));
+render();
+</script></body></html>
