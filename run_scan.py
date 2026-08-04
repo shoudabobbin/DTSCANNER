@@ -13,8 +13,8 @@ import sys
 import time
 
 from scanner.config import load_config
-from scanner.data import (download, filter_universe, load_benchmark,
-                          staleness_report)
+from scanner.data import (download, filter_universe, incomplete_bar,
+                          load_benchmark, staleness_report)
 from scanner.report import write_outputs
 from scanner.scan import regime_now, scan_frames
 from scanner.universe import build_universe
@@ -27,6 +27,9 @@ def main() -> int:
     ap.add_argument("--tickers", default=None, help="comma-separated override list")
     ap.add_argument("--min-score", type=float, default=None)
     ap.add_argument("--limit", type=int, default=None, help="cap universe size (testing)")
+    ap.add_argument("--allow-incomplete", action="store_true",
+                    help="scan even if the last bar is still forming (RVOL will "
+                         "be understated — see scanner.data.incomplete_bar)")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
@@ -60,6 +63,21 @@ def main() -> int:
               f"{bar_date.date()} consensus bar; excluded from this scan")
         for t in st["stale_tickers"]:
             frames.pop(t, None)
+
+    # A still-forming bar has partial volume, which makes RVOL meaningless and
+    # empties the in-play filter. Refuse rather than publish a garbage list —
+    # the previous page is a better answer than one built on half a session.
+    inc = incomplete_bar(bar_date)
+    if inc["incomplete"] and not args.allow_incomplete:
+        print(f"\nABORTED: the {bar_date.date()} bar is still forming "
+              f"({inc['reason']}, now {inc['now_et']} ET).\n"
+              "Volume so far is a fraction of a full session, so RVOL is "
+              "understated and the in-play filter will return little or "
+              "nothing.\n"
+              "Run again after 16:00 ET, or pass --allow-incomplete to "
+              "override.\n"
+              "The published page has been left untouched.")
+        return 2
 
     print("[3/5] applying liquidity filter")
     frames = filter_universe(frames, cfg)

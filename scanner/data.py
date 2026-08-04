@@ -156,6 +156,42 @@ def download(tickers: list[str], cfg: Cfg, verbose: bool = True) -> dict[str, pd
     return frames
 
 
+def incomplete_bar(bar_date) -> dict:
+    """Is the newest bar still forming?
+
+    True when the last bar is dated today (US Eastern) and it's before 16:00 ET.
+    That bar then holds a partial session: partial volume, a partial range, and
+    a close that is really just the last print.
+
+    This matters more than it looks. The in-play filter compares today's volume
+    to a 50-day average of *full* days — halfway through a session that ratio is
+    roughly halved, so nothing clears the threshold and the scan returns an
+    empty list that looks like a quiet market rather than a broken input.
+    """
+    from datetime import datetime
+    try:
+        from zoneinfo import ZoneInfo
+        now_et = datetime.now(ZoneInfo("America/New_York"))
+    except Exception:                      # no tzdata — assume complete
+        return {"incomplete": False, "reason": "timezone unavailable"}
+
+    if bar_date is None:
+        return {"incomplete": False, "reason": "no data"}
+
+    bd = pd.Timestamp(bar_date).date()
+    if bd != now_et.date():
+        return {"incomplete": False, "reason": "last bar is a prior session"}
+
+    close_h, close_m = 16, 0
+    if (now_et.hour, now_et.minute) >= (close_h, close_m):
+        return {"incomplete": False, "reason": "after the close"}
+
+    mins = (close_h * 60 + close_m) - (now_et.hour * 60 + now_et.minute)
+    return {"incomplete": True, "minutes_to_close": mins,
+            "now_et": now_et.strftime("%H:%M"),
+            "reason": f"{mins} minutes before the 16:00 ET close"}
+
+
 def staleness_report(frames: dict[str, pd.DataFrame]) -> dict:
     """How current is the data actually? The scan happily runs on a cache that
     silently stopped updating, so surface the last bar date before trusting it."""
