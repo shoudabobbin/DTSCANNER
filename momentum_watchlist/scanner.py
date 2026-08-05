@@ -49,6 +49,12 @@ CONFIG = {
     # movers, even ones that don't yet clear the "in play" bar (tagged MOVER).
     "min_names": 12,
 
+    # Day-trading quality: to be "in play" a name must still be MOVING intraday,
+    # not just gapped-and-flat. It needs to have moved at least this % since the
+    # OPEN in its direction (or be pinned near the day's extreme). Gap-and-die
+    # names get tagged MOVER and sink in the ranking.
+    "min_since_open_pct": 1.0,
+
     "screeners_long":  ["day_gainers", "small_cap_gainers",
                         "most_actives", "aggressive_small_caps"],
     "screeners_short": ["day_losers"],
@@ -99,31 +105,45 @@ def normalize(q):
     price = q.get("regularMarketPrice")
     vol = q.get("regularMarketVolume")
     avg = q.get("averageDailyVolume3Month") or q.get("averageDailyVolume10Day")
+    op = q.get("regularMarketOpen")
+    dh = q.get("regularMarketDayHigh")
+    dl = q.get("regularMarketDayLow")
+    pc = q.get("regularMarketPreviousClose")
+    rng = (dh - dl) if (dh is not None and dl is not None) else None
     return {
         "symbol": q.get("symbol"),
         "name": q.get("shortName") or q.get("longName") or "",
         "price": price,
-        "change": q.get("regularMarketChangePercent"),
+        "change": q.get("regularMarketChangePercent"),   # vs prior close = the gap
         "volume": vol,
         "rvol": (vol / avg) if (vol and avg) else None,
         "dollar_vol": (price * vol) if (price and vol) else None,      # today so far
         "avg_dollar_vol": (price * avg) if (price and avg) else None,  # normal day (stable)
         "market_cap": q.get("marketCap"),
         "quote_type": (q.get("quoteType") or "").upper(),
+        "open": op, "day_high": dh, "day_low": dl,
+        "gap": ((op - pc) / pc * 100) if (op and pc) else None,        # overnight jump
+        # intraday drive since the OPEN — separates a live mover from a gap-and-die
+        "since_open": ((price - op) / op * 100) if (price and op) else None,
+        "range_pos": ((price - dl) / rng) if (rng and rng > 0 and price is not None) else None,
     }
 
 
-def enrich(sym):
+def enrich(sym, have=None):
+    """Adds 14-day ADR% (not in the quote), and backfills day high/low only if
+    the screener quote didn't already provide them."""
     import yfinance as yf
+    have = have or {}
     try:
         h = yf.Ticker(sym).history(period="1mo", interval="1d")
         if len(h) < 2:
             return {}
-        prev = float(h["Close"].iloc[-2]); today = h.iloc[-1]
-        op, hi, lo = float(today["Open"]), float(today["High"]), float(today["Low"])
         adr = float(((h["High"] - h["Low"]) / h["Close"]).tail(14).mean() * 100)
-        return {"gap": (op - prev) / prev * 100 if prev else None,
-                "day_high": hi, "day_low": lo, "adr_pct": round(adr, 1)}
+        out = {"adr_pct": round(adr, 1)}
+        if have.get("day_high") is None or have.get("day_low") is None:
+            today = h.iloc[-1]
+            out["day_high"] = float(today["High"]); out["day_low"] = float(today["Low"])
+        return out
     except Exception:
         return {}
 
@@ -188,19 +208,46 @@ def passes(r, c):
     return True
 
 
+def _intraday_drive(r):
+    """% moved since the OPEN, signed by trade direction. Positive = still pushing
+    the way it gapped; <= 0 = gapped then stalled or faded (a gap-and-die)."""
+    so = r.get("since_open")
+    if so is None:
+        return 0.0
+    return so if (r["change"] or 0) >= 0 else -so
+
+
+def _extension(r):
+    """Where price sits in today's range, in the trade direction. 1 = at the
+    extreme (near highs for a long / near lows for a short)."""
+    rp = r.get("range_pos")
+    if rp is None:
+        return 0.5
+    return rp if (r["change"] or 0) >= 0 else (1 - rp)
+
+
 def is_in_play(r, c, early):
-    """A real mover with participation. In the first hour a big % move alone
-    qualifies, since rvol isn't trustworthy yet."""
+    """A real mover, with volume, that is STILL moving intraday — not a gap-and-die.
+    Needs: a big enough % move + volume confirmation (relaxed in the first hour)
+    + either fresh drive since the open OR price pinned near the day's extreme."""
     if abs(r["change"]) < c["min_change_pct"]:
         return False
     rv = r["rvol"]
-    if early or rv is None:
-        return True
-    return rv >= c["min_rel_volume"]
+    if not (early or rv is None or rv >= c["min_rel_volume"]):
+        return False
+    if r.get("since_open") is None and r.get("range_pos") is None:
+        return True   # no intraday data available — don't penalize
+    return (_intraday_drive(r) >= c.get("min_since_open_pct", 1.0)
+            or _extension(r) >= 0.66)
 
 
 def raw_score(r):
-    return abs(r["change"]) * math.log10((r["rvol"] or 1.0) * 10 + 1)
+    """Rank by intraday action, not the overnight gap: reward continuation since
+    the open and being near the day's extreme; the gap itself is a minor term."""
+    drive = max(_intraday_drive(r), 0.0)
+    ext = _extension(r)                       # 0..1
+    vol = math.log10((r["rvol"] or 1.0) * 10 + 1)
+    return (drive * 2.0 + ext * 8.0 + abs(r["change"] or 0) * 0.3) * vol
 
 
 def suggested_stop_pct(r):
@@ -224,7 +271,7 @@ def build_rows(raw, cfg, live=False):
     kept = elig[: max(cfg["top_n"], cfg.get("min_names", 0))]
     if live:
         for r in kept:
-            r.update(enrich(r["symbol"]))
+            r.update(enrich(r["symbol"], r))
     if kept:
         lo = min(r["_s"] for r in kept); hi = max(r["_s"] for r in kept)
         span = (hi - lo) or 1
@@ -240,6 +287,8 @@ def build_rows(raw, cfg, live=False):
             "rvol": round(r["rvol"], 1) if r["rvol"] else None,
             "dollar_vol": int(r["dollar_vol"]) if r["dollar_vol"] else None,
             "gap": round(r["gap"], 1) if r.get("gap") is not None else None,
+            "since_open": round(r["since_open"], 1) if r.get("since_open") is not None else None,
+            "range_pos": round(r["range_pos"], 2) if r.get("range_pos") is not None else None,
             "day_high": round(r["day_high"], 2) if r.get("day_high") else None,
             "day_low": round(r["day_low"], 2) if r.get("day_low") else None,
             "adr_pct": r.get("adr_pct"),
@@ -343,10 +392,11 @@ th{background:var(--blue);color:#fff;font-size:11px;font-weight:600}
 <div id="tablewrap" class="hide"></div>
 
 <div class="foot">
-Score is a relative momentum ranking (% move weighted by relative volume) for THIS list on THIS refresh —
-it is not a probability or a prediction. Shares/stop are risk-based suggestions from your inputs and each name's
-average daily range; set your real stop on the chart. This is a list of names to STUDY, not signals to buy.
-Re-run every day. Not financial advice.
+<b>CHG (gap)</b> is the move vs yesterday's close — mostly the overnight gap. <b>SINCE OPEN</b> is how it's moved
+since 9:30, which is what tells a live mover from a gap-and-die. <b>IN PLAY</b> = still moving intraday (near the
+day's extreme or driving since the open); <b>MOVER</b> = it gapped but has gone quiet. Ranking favors intraday
+action, not the gap. Score orders THIS list on THIS refresh — not a probability or prediction. Shares/stop are
+risk-based suggestions; set your real stop on the chart. A list of names to STUDY, not signals to buy. Not financial advice.
 </div></div>
 
 <script>
@@ -397,10 +447,10 @@ function card(r){
    ${rangeMark(r)}
    <div class="stats">
      <div class="st"><div class="k">PRICE</div><div class="v">$${r.price.toFixed(2)}</div></div>
-     <div class="st"><div class="k">CHG</div><div class="v ${cc}">${r.change>=0?'+':''}${r.change}%</div></div>
+     <div class="st"><div class="k">CHG (GAP)</div><div class="v ${cc}">${r.change>=0?'+':''}${r.change}%</div></div>
+     <div class="st"><div class="k">SINCE OPEN</div><div class="v ${r.since_open==null?'':((r.since_open>=0)===(r.dir==='long')?'g':'r')}">${r.since_open==null?'—':(r.since_open>=0?'+':'')+r.since_open+'%'}</div></div>
      <div class="st"><div class="k">RVOL</div><div class="v">${r.rvol??'—'}${r.rvol?'x':''}</div></div>
      <div class="st"><div class="k">$VOL</div><div class="v">${r.dollar_vol?'$'+(r.dollar_vol/1e6).toFixed(0)+'M':'—'}</div></div>
-     <div class="st"><div class="k">GAP</div><div class="v">${r.gap==null?'—':(r.gap>=0?'+':'')+r.gap+'%'}</div></div>
      <div class="st"><div class="k">DAY LOW</div><div class="v">${r.day_low?'$'+r.day_low:'—'}</div></div>
      <div class="st"><div class="k">DAY HIGH</div><div class="v">${r.day_high?'$'+r.day_high:'—'}</div></div>
      <div class="st"><div class="k">ADR</div><div class="v">${r.adr_pct?r.adr_pct+'%':'—'}</div></div>
@@ -413,13 +463,14 @@ function card(r){
    </div></div>`;
 }
 function table(list){
-  let h = `<table><tr><th>Ticker</th><th>Dir</th><th>Price</th><th>Chg</th><th>RVol</th>
-   <th>$Vol</th><th>Gap</th><th>Range</th><th>ADR</th><th>Shares</th><th>Score</th></tr>`;
+  let h = `<table><tr><th>Ticker</th><th>Dir</th><th>Price</th><th>Chg (gap)</th><th>Since open</th><th>RVol</th>
+   <th>$Vol</th><th>Range</th><th>ADR</th><th>Shares</th><th>Score</th></tr>`;
   for(const r of list){ const z=sized(r);
+    const soc = r.since_open==null?'var(--mut)':(((r.since_open>=0)===(r.dir==='long'))?'var(--green)':'var(--red)');
     h+=`<tr><td>${r.symbol}</td><td>${r.dir}</td><td>$${r.price.toFixed(2)}</td>
      <td style="color:${r.change>=0?'var(--green)':'var(--red)'}">${r.change>=0?'+':''}${r.change}%</td>
+     <td style="color:${soc}">${r.since_open==null?'—':(r.since_open>=0?'+':'')+r.since_open+'%'}</td>
      <td>${r.rvol??'—'}</td><td>${r.dollar_vol?'$'+(r.dollar_vol/1e6).toFixed(0)+'M':'—'}</td>
-     <td>${r.gap==null?'—':r.gap+'%'}</td>
      <td>${r.day_low&&r.day_high?'$'+r.day_low+'–'+r.day_high:'—'}</td>
      <td>${r.adr_pct?r.adr_pct+'%':'—'}</td><td>${z.shares}</td><td>${r.rank}</td></tr>`; }
   return h+'</table>';
@@ -491,12 +542,13 @@ def write_outputs(rows, tone, cfg, note):
         f.write(render_html(rows, tone, cfg, note))
     with open(os.path.join(cfg["out_dir"], "watchlist.csv"), "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["symbol", "dir", "price", "change_pct", "rvol", "dollar_volume",
-                    "gap_pct", "day_low", "day_high", "adr_pct", "score"])
+        w.writerow(["symbol", "dir", "in_play", "price", "change_pct", "since_open_pct",
+                    "rvol", "dollar_volume", "gap_pct", "day_low", "day_high",
+                    "adr_pct", "score"])
         for r in rows:
-            w.writerow([r["symbol"], r["dir"], r["price"], r["change"], r["rvol"],
-                        r["dollar_vol"], r["gap"], r["day_low"], r["day_high"],
-                        r["adr_pct"], r["rank"]])
+            w.writerow([r["symbol"], r["dir"], r.get("in_play"), r["price"], r["change"],
+                        r.get("since_open"), r["rvol"], r["dollar_vol"], r["gap"],
+                        r["day_low"], r["day_high"], r["adr_pct"], r["rank"]])
 
 
 # ============================================================
@@ -650,33 +702,40 @@ def loop(cfg, publish_it):
 # ============================================================
 # Demo data (Yahoo-shaped)
 # ============================================================
+# Yahoo-shaped quotes incl. intraday fields (open / day high / day low / prev close).
+# GAPR is a deliberate "gap-and-die": gapped +26% but faded since the open and sits
+# near the day's lows — it should be tagged MOVER and rank BELOW the live movers.
+def _q(sym, name, price, chg, vol, avg, cap, op, hi, lo, prev, qt="EQUITY"):
+    return {"symbol": sym, "shortName": name, "regularMarketPrice": price,
+            "regularMarketChangePercent": chg, "regularMarketVolume": vol,
+            "averageDailyVolume3Month": avg, "marketCap": cap, "quoteType": qt,
+            "regularMarketOpen": op, "regularMarketDayHigh": hi,
+            "regularMarketDayLow": lo, "regularMarketPreviousClose": prev}
+
+
 DEMO = [
-    {"symbol":"BIYA","shortName":"Baiya International","regularMarketPrice":6.44,"regularMarketChangePercent":54.4,"regularMarketVolume":30_000_000,"averageDailyVolume3Month":2_100_000,"marketCap":180_000_000,"quoteType":"EQUITY"},
-    {"symbol":"WLDS","shortName":"Wearable Devices","regularMarketPrice":3.83,"regularMarketChangePercent":20.4,"regularMarketVolume":12_000_000,"averageDailyVolume3Month":1_500_000,"marketCap":60_000_000,"quoteType":"EQUITY"},
-    {"symbol":"PSQH","shortName":"PSQ Holdings","regularMarketPrice":3.70,"regularMarketChangePercent":20.1,"regularMarketVolume":9_000_000,"averageDailyVolume3Month":2_000_000,"marketCap":100_000_000,"quoteType":"EQUITY"},
-    {"symbol":"PRLD","shortName":"Prelude Therapeutics","regularMarketPrice":4.64,"regularMarketChangePercent":19.3,"regularMarketVolume":4_500_000,"averageDailyVolume3Month":1_100_000,"marketCap":250_000_000,"quoteType":"EQUITY"},
-    {"symbol":"TTGT","shortName":"TechTarget Inc","regularMarketPrice":4.47,"regularMarketChangePercent":17.6,"regularMarketVolume":3_000_000,"averageDailyVolume3Month":900_000,"marketCap":130_000_000,"quoteType":"EQUITY"},
-    {"symbol":"ENTX","shortName":"Entera Bio","regularMarketPrice":3.26,"regularMarketChangePercent":-16.8,"regularMarketVolume":5_300_000,"averageDailyVolume3Month":900_000,"marketCap":120_000_000,"quoteType":"EQUITY"},
-    {"symbol":"NCLH","shortName":"Norwegian Cruise","regularMarketPrice":19.22,"regularMarketChangePercent":-8.4,"regularMarketVolume":9_000_000,"averageDailyVolume3Month":1_200_000,"marketCap":900_000_000,"quoteType":"EQUITY"},
-    {"symbol":"SOXL","shortName":"Direxion Semi Bull 3X ETF","regularMarketPrice":40.0,"regularMarketChangePercent":8.0,"regularMarketVolume":80_000_000,"averageDailyVolume3Month":70_000_000,"marketCap":8_000_000_000,"quoteType":"ETF"},
-    {"symbol":"AVGO","shortName":"Broadcom Inc","regularMarketPrice":383.6,"regularMarketChangePercent":6.0,"regularMarketVolume":20_000_000,"averageDailyVolume3Month":18_000_000,"marketCap":1_700_000_000_000,"quoteType":"EQUITY"},
+    _q("BIYA", "Baiya International", 6.44, 54.4, 30_000_000, 2_100_000, 180_000_000, 5.50, 6.82, 4.03, 4.17),
+    _q("WLDS", "Wearable Devices", 3.83, 20.4, 12_000_000, 1_500_000, 60_000_000, 3.30, 4.05, 3.10, 3.18),
+    _q("PSQH", "PSQ Holdings", 3.70, 20.1, 9_000_000, 2_000_000, 100_000_000, 3.25, 3.90, 3.05, 3.08),
+    _q("PRLD", "Prelude Therapeutics", 4.64, 19.3, 4_500_000, 1_100_000, 250_000_000, 4.10, 4.80, 3.90, 3.89),
+    _q("TTGT", "TechTarget Inc", 4.47, 17.6, 3_000_000, 900_000, 130_000_000, 4.30, 4.60, 3.95, 3.80),
+    _q("GAPR", "Gap And Die Co", 5.05, 26.3, 6_000_000, 1_500_000, 150_000_000, 5.20, 5.35, 4.95, 4.00),
+    _q("ENTX", "Entera Bio", 3.26, -16.8, 5_300_000, 900_000, 120_000_000, 3.90, 3.96, 3.02, 3.92),
+    _q("NCLH", "Norwegian Cruise", 19.22, -8.4, 9_000_000, 1_200_000, 900_000_000, 20.90, 21.20, 19.00, 20.98),
+    _q("SOXL", "Direxion Semi Bull 3X ETF", 40.0, 8.0, 80_000_000, 70_000_000, 8_000_000_000, 39.0, 41.0, 38.0, 37.0, "ETF"),
+    _q("AVGO", "Broadcom Inc", 383.6, 6.0, 20_000_000, 18_000_000, 1_700_000_000_000, 380.0, 386.0, 379.0, 361.9),
 ]
-# demo intraday levels so the page looks complete offline: (low, high, open, prev_close)
-DEMO_LEVELS = {
-    "BIYA":(4.03,6.82,5.50,4.17),"WLDS":(3.10,4.05,3.30,3.18),"PSQH":(3.05,3.90,3.20,3.08),
-    "PRLD":(3.90,4.80,4.05,3.89),"TTGT":(3.80,4.60,3.95,3.80),"ENTX":(3.02,3.96,3.90,3.92),
-    "NCLH":(19.0,21.2,20.9,20.98),
-}
 
 
 def _demo_enrich_patch():
-    """Monkeypatch enrich() to use bundled levels in demo mode (offline)."""
-    def fake(sym):
-        if sym in DEMO_LEVELS:
-            lo, hi, op, prev = DEMO_LEVELS[sym]
-            return {"gap": round((op - prev) / prev * 100, 1), "day_high": hi,
-                    "day_low": lo, "adr_pct": round((hi - lo) / ((hi + lo) / 2) * 100, 1)}
-        return {}
+    """Offline enrich(): ADR% from the (demo) day range; day high/low already
+    come from the quote via normalize()."""
+    def fake(sym, have=None):
+        have = have or {}
+        dh, dl = have.get("day_high"), have.get("day_low")
+        if dh and dl and dh > dl:
+            return {"adr_pct": round((dh - dl) / ((dh + dl) / 2) * 100, 1)}
+        return {"adr_pct": 8.0}
     return fake
 
 
