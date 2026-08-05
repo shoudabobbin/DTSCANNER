@@ -40,10 +40,14 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG = {
     "min_price": 1.0,
     "max_price": 20.0,
-    "min_change_pct": 5.0,        # abs % move today to count as "in play"
-    "min_rel_volume": 1.5,        # today's volume vs normal
-    "min_dollar_volume": 1_000_000,
+    "min_change_pct": 5.0,        # % move that flags a name "in play" (SOFT, not a hard cut)
+    "min_rel_volume": 1.5,        # rel-volume that confirms "in play" (relaxed in the first hour)
+    "min_dollar_volume": 1_000_000,  # liquidity floor, on AVERAGE daily $ volume (time-of-day proof)
     "max_market_cap": 3_000_000_000,   # skip megacap name brands (None to disable)
+
+    # Never show an empty page: always fill up to this many of the day's biggest
+    # movers, even ones that don't yet clear the "in play" bar (tagged MOVER).
+    "min_names": 12,
 
     "screeners_long":  ["day_gainers", "small_cap_gainers",
                         "most_actives", "aggressive_small_caps"],
@@ -102,7 +106,8 @@ def normalize(q):
         "change": q.get("regularMarketChangePercent"),
         "volume": vol,
         "rvol": (vol / avg) if (vol and avg) else None,
-        "dollar_vol": (price * vol) if (price and vol) else None,
+        "dollar_vol": (price * vol) if (price and vol) else None,      # today so far
+        "avg_dollar_vol": (price * avg) if (price and avg) else None,  # normal day (stable)
         "market_cap": q.get("marketCap"),
         "quote_type": (q.get("quoteType") or "").upper(),
     }
@@ -161,20 +166,37 @@ def is_junk(r):
 
 
 def passes(r, c):
-    p, ch, dv, rv, mc = r["price"], r["change"], r["dollar_vol"], r["rvol"], r["market_cap"]
-    if p is None or ch is None or is_junk(r):
+    """Eligible universe: right price, liquid on a NORMAL day, not junk/megacap.
+
+    % change and relative volume are deliberately NOT hard gates here. Early in
+    the session only part of the day's volume has traded, so rvol (today vs a
+    full-day average) reads artificially low and today's $-volume is tiny —
+    that is exactly what made the 9:57am list come up empty. Those two signals
+    drive the IN PLAY flag and the ranking instead (see is_in_play / build_rows).
+    """
+    p, mc = r["price"], r["market_cap"]
+    if p is None or r["change"] is None or is_junk(r):
         return False
     if not (c["min_price"] <= p <= c["max_price"]):
         return False
-    if abs(ch) < c["min_change_pct"]:
-        return False
-    if rv is not None and rv < c["min_rel_volume"]:
-        return False
-    if dv is not None and dv < c["min_dollar_volume"]:
+    # liquidity on AVERAGE daily $ volume so it doesn't collapse mid-morning
+    liq = r.get("avg_dollar_vol") or r.get("dollar_vol")
+    if liq is not None and liq < c["min_dollar_volume"]:
         return False
     if c["max_market_cap"] and mc and mc > c["max_market_cap"]:
         return False
     return True
+
+
+def is_in_play(r, c, early):
+    """A real mover with participation. In the first hour a big % move alone
+    qualifies, since rvol isn't trustworthy yet."""
+    if abs(r["change"]) < c["min_change_pct"]:
+        return False
+    rv = r["rvol"]
+    if early or rv is None:
+        return True
+    return rv >= c["min_rel_volume"]
 
 
 def raw_score(r):
@@ -188,18 +210,21 @@ def suggested_stop_pct(r):
 
 
 def build_rows(raw, cfg, live=False):
+    early = cfg.get("_early", False)
     rows = [normalize(q) for q in raw]
-    kept = [r for r in rows if passes(r, cfg)]
+    elig = [r for r in rows if passes(r, cfg)]
     if not cfg["include_shorts"]:
-        kept = [r for r in kept if r["change"] >= 0]
-    for r in kept:
+        elig = [r for r in elig if r["change"] >= 0]
+    for r in elig:
         r["_s"] = raw_score(r)
-    kept.sort(key=lambda r: -r["_s"])
-    kept = kept[: cfg["top_n"]]
+        r["_inplay"] = is_in_play(r, cfg, early)
+    # in-play names first, then everything else by score — so the page always
+    # fills with the day's biggest movers even when nothing clears the bar yet
+    elig.sort(key=lambda r: (not r["_inplay"], -r["_s"]))
+    kept = elig[: max(cfg["top_n"], cfg.get("min_names", 0))]
     if live:
         for r in kept:
             r.update(enrich(r["symbol"]))
-    # normalize score to a 60-99 "rank" for display
     if kept:
         lo = min(r["_s"] for r in kept); hi = max(r["_s"] for r in kept)
         span = (hi - lo) or 1
@@ -209,6 +234,7 @@ def build_rows(raw, cfg, live=False):
         out.append({
             "symbol": r["symbol"], "name": r["name"][:34],
             "dir": "long" if r["change"] >= 0 else "short",
+            "in_play": bool(r["_inplay"]),
             "price": round(r["price"], 2),
             "change": round(r["change"], 1),
             "rvol": round(r["rvol"], 1) if r["rvol"] else None,
@@ -263,6 +289,7 @@ border-radius:12px;padding:12px}
 .tk{font-size:17px;font-weight:700}
 .tag{font-size:10px;font-weight:700;padding:2px 6px;border-radius:5px;margin-left:6px;vertical-align:2px}
 .tag.long{background:var(--greenbg);color:var(--green)} .tag.short{background:var(--redbg);color:var(--red)}
+.tag.play{background:var(--greenbg);color:var(--green)} .tag.mover{background:#eef0f3;color:var(--mut)}
 .rk{font-size:16px;font-weight:700;text-align:right;line-height:1}
 .rk span{font-size:9px;color:var(--mut);font-weight:500;letter-spacing:.05em}
 .why{font-size:12px;color:var(--mut);margin:3px 0 8px}
@@ -363,7 +390,8 @@ function card(r){
   const cc = r.change>=0?'g':'r';
   return `<div class="card ${r.dir}">
    <div class="chd"><div><span class="tk">${r.symbol}</span>
-     <span class="tag ${r.dir}">${r.dir.toUpperCase()}</span></div>
+     <span class="tag ${r.dir}">${r.dir.toUpperCase()}</span>
+     <span class="tag ${r.in_play?'play':'mover'}">${r.in_play?'IN PLAY':'MOVER'}</span></div>
      <div class="rk">${r.rank}<br><span>SCORE</span></div></div>
    <div class="why">${r.name}</div>
    ${rangeMark(r)}
@@ -399,9 +427,11 @@ function table(list){
 function render(){
   const list = rows();
   const nL = DATA.filter(r=>r.dir==='long').length, nS = DATA.filter(r=>r.dir==='short').length;
+  const nP = DATA.filter(r=>r.in_play).length;
   $('#sub').textContent = `Updated ${META.generated} · refreshes every ${META.refresh_min} min`;
   const t = META.tone;
   $('#badges').innerHTML =
+    `<span class="badge bull">${nP} in play</span>`+
     `<span class="badge">${nL} long</span><span class="badge">${nS} short</span>`+
     `<span class="badge ${t.cls}">market ${t.label}${t.change!=null?' · '+(t.change>=0?'+':'')+t.change.toFixed(2)+'%':''}</span>`+
     `<span class="badge">${META.scanned} scanned</span>`;
@@ -410,7 +440,7 @@ function render(){
   if(S.layout==='cards'){
     $('#grid').classList.remove('hide'); $('#tablewrap').classList.add('hide');
     $('#grid').innerHTML = list.length? list.map(card).join('') :
-      '<div style="color:var(--mut);padding:20px">No names match. Loosen the filters in scanner.py, or it is a quiet day.</div>';
+      '<div style="color:var(--mut);padding:20px">Nothing eligible right now (pre-market or a very quiet tape). Once a good list has been saved, the page shows it automatically instead of going blank.</div>';
   } else {
     $('#grid').classList.add('hide'); $('#tablewrap').classList.remove('hide');
     $('#tablewrap').innerHTML = table(list);
@@ -546,18 +576,55 @@ def note_text(cfg, tone):
             "mark levels, wait for the setup, size by risk. " + tone["mood"])
 
 
+CACHE_FILE = os.path.join(HERE, "last_good.json")
+
+
+def _minutes_since_open(cfg):
+    t = now_et()
+    o = t.replace(hour=cfg["market_open"][0], minute=cfg["market_open"][1],
+                  second=0, microsecond=0)
+    return (t - o).total_seconds() / 60
+
+
+def save_cache(rows, tone):
+    try:
+        json.dump({"saved": dt.datetime.now().strftime("%b %d, %I:%M %p"),
+                   "rows": rows, "tone": tone}, open(CACHE_FILE, "w"))
+    except Exception:
+        pass
+
+
+def load_cache():
+    try:
+        return json.load(open(CACHE_FILE))
+    except Exception:
+        return None
+
+
 def scan_once(cfg, publish_it=False):
     if cfg.get("_demo"):
         raw = DEMO
+        cfg["_early"] = False
     else:
         screens = list(cfg["screeners_long"]) + (cfg["screeners_short"] if cfg["include_shorts"] else [])
         print("Scanning Yahoo screeners...")
         raw = get_screener_rows(screens)
+        cfg["_early"] = 0 <= _minutes_since_open(cfg) < 60   # relax rvol in the first hour
     cfg["_scanned"] = len(raw)
     tone = tone_from(-0.97) if cfg.get("_demo") else get_market_tone(cfg["market_tone_symbol"])
-    # live=True runs enrich() for levels; in demo, enrich() is patched to be offline
-    rows = build_rows(raw, cfg, live=True)
-    write_outputs(rows, tone, cfg, note_text(cfg, tone))
+    rows = build_rows(raw, cfg, live=True)   # live=True enriches levels (patched offline in demo)
+    note = note_text(cfg, tone)
+
+    if rows:
+        save_cache(rows, tone)               # remember the last good list
+    else:
+        cached = load_cache()                # nothing eligible -> fall back, clearly labeled
+        if cached and cached.get("rows"):
+            rows, tone = cached["rows"], cached["tone"]
+            note = ("STALE — nothing was eligible on this scan, so this is the last good "
+                    f"list from {cached['saved']}. Re-check once the market is active.")
+
+    write_outputs(rows, tone, cfg, note)
     print(f"  {len(rows)} names -> {os.path.join(cfg['out_dir'],'index.html')}")
     if publish_it:
         publish(cfg)

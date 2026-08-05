@@ -1,202 +1,153 @@
-# Complete Setup Guide — Momentum Watchlist
+# Momentum Watchlist — Full Setup Guide (start to finish)
 
-Follow this top to bottom. You do the LAPTOP part once, the DELL part once, and
-then it runs itself.
-
-## The plan in one picture
+This is the ONE guide to follow. It covers both machines. If you've already done
+a step, just skip it.
 
 ```
-LAPTOP  → pushes the code to GitHub (one time)
-DELL    → clones the code, runs the scanner 24/7, updates your web page
-PHONE   → opens the web page URL
+LAPTOP  → pushes the code to GitHub (you're on this machine now)
+DELL    → clones the code, runs the scanner 24/7, updates the web page
+PHONE   → opens the web page
 ```
 
-- **Laptop** = the computer you built this on (where the code is now).
-- **Dell** = the always-on machine that does the real work.
-- Your live URL will be: **https://shoudabobbin.github.io/DTSCANNER/**
+Your live URL: **https://shoudabobbin.github.io/DTSCANNER/**
 
 ---
 
-# PART 1 — ON YOUR LAPTOP  (about 5 minutes, one time)
+# PART 1 — LAPTOP  (push the latest code) · ~3 min
 
-Goal: get the new `momentum_watchlist` folder onto GitHub so the Dell can grab it.
+1. Press Start, type `cmd`, hit Enter to open **Command Prompt**.
+2. Go to the repo:
+   ```
+   cd C:\Users\shrek\Desktop\DT_SCANNER
+   ```
+3. Push everything (this includes the scanner and today's fixes):
+   ```
+   git add momentum_watchlist .gitignore
+   git commit -m "Momentum watchlist + morning-filter fixes"
+   git push
+   ```
+   If it opens a GitHub sign-in window, sign in and authorize.
 
-**1.1** Open **Command Prompt**. (Press Start, type `cmd`, Enter.)
-
-**1.2** Go to the repo:
-
-```bat
-cd C:\Users\shrek\Desktop\DT_SCANNER
-```
-
-**1.3** Tell git to ignore the scratch folders (so they don't clutter the repo):
-
-```bat
-echo momentum_watchlist/docs/>> .gitignore
-echo .ghpages_wt/>> .gitignore
-```
-
-**1.4** Commit and push the new tool:
-
-```bat
-git add momentum_watchlist .gitignore
-git commit -m "Add momentum day-trading watchlist"
-git push
-```
-
-> If `git push` asks you to sign in, a GitHub window will pop up — sign in and
-> authorize. (You already did this once for the swing scanner, so it may just work.)
-
-**1.5 (optional) Preview it here first:**
-
-```bat
-cd momentum_watchlist
-python -m pip install -r requirements.txt
-python scanner.py --demo
-```
-
-Then open `C:\Users\shrek\Desktop\DT_SCANNER\momentum_watchlist\docs\index.html`
-in your browser to see the page with sample data.
-
-**Laptop done.** Everything else happens on the Dell.
+That's the laptop done. Everything else is on the Dell.
 
 ---
 
-# PART 2 — ON THE DELL  (about 15 minutes, one time)
+# PART 2 — DELL  (one-time install) · ~15 min
 
-## 2A. Install Python
+### 2A. Install Python
+1. Go to **https://www.python.org/downloads/**, download Python 3.
+2. Run the installer. **CHECK "Add python.exe to PATH"** at the bottom. Click Install Now.
+3. Open Command Prompt and verify:
+   ```
+   python --version
+   ```
 
-1. Go to **https://www.python.org/downloads/** and download the latest Python 3.
-2. Run the installer. **CHECK THE BOX "Add python.exe to PATH"** at the bottom —
-   this matters. Then click **Install Now**.
-3. Verify: open **Command Prompt** and run:
-
-```bat
-python --version
-```
-
-You should see `Python 3.x.x`. (If it says "not recognized," re-run the installer
-and make sure the PATH box is checked.)
-
-## 2B. Install Git
-
-1. Go to **https://git-scm.com/download/win**, download, and install with all the
-   default options (just keep clicking Next).
+### 2B. Install Git
+1. Go to **https://git-scm.com/download/win**, download, install with all defaults.
 2. Verify in a new Command Prompt:
+   ```
+   git --version
+   ```
 
-```bat
-git --version
+### 2C. Set your Git identity
 ```
-
-## 2C. Set your git identity (needed to save updates)
-
-```bat
 git config --global user.name "Holden"
 git config --global user.email "holdentomanchek@gmail.com"
 ```
 
-## 2D. Download your project
+### 2D. Get the project onto the Dell
+- **If the Dell does NOT already have the repo:**
+  ```
+  cd %USERPROFILE%\Desktop
+  git clone https://github.com/shoudabobbin/DTSCANNER.git
+  cd DTSCANNER\momentum_watchlist
+  ```
+- **If the Dell ALREADY has it** (you set it up before), just update it:
+  ```
+  cd %USERPROFILE%\Desktop\DTSCANNER
+  git pull
+  cd momentum_watchlist
+  ```
 
-```bat
-cd %USERPROFILE%\Desktop
-git clone https://github.com/shoudabobbin/DTSCANNER.git
-cd DTSCANNER\momentum_watchlist
+### 2E. Install the requirements
 ```
-
-## 2E. Install the requirements
-
-```bat
 python -m pip install -r requirements.txt
 ```
 
-## 2F. First run + first publish
-
-First prove it builds a page (offline, instant):
-
-```bat
+### 2F. First run + first publish
+Prove it builds a page offline (instant):
+```
 python scanner.py --demo
 ```
-
-Now do the real first publish. This also signs the Dell into GitHub and creates
-the `gh-pages` branch:
-
-```bat
+Now the real run — this also signs the Dell into GitHub and creates the
+`gh-pages` branch the first time:
+```
 python scanner.py --once --publish
 ```
-
 > On the first `--publish`, a **GitHub sign-in window pops up** — sign in and
-> click Authorize. That's the Dell getting permission to update your page. It
-> only happens once.
-
-## 2G. Turn on the web page (on GitHub, any device)
-
-1. Go to **https://github.com/shoudabobbin/DTSCANNER** → **Settings** → **Pages**.
-2. Under **Source**, choose **Deploy from a branch**.
-3. Branch = **gh-pages**, Folder = **/ (root)**, click **Save**.
-4. Wait about a minute, then open **https://shoudabobbin.github.io/DTSCANNER/** —
-   your watchlist is live.
-
-> This makes the day-trading watchlist your live page instead of the old swing
-> one. Nothing is deleted — to switch back, set Pages source to `main` `/docs`.
-
-## 2H. Stop the Dell from sleeping
-
-Settings → **System** → **Power** → set **Sleep** to **Never** (when plugged in),
-so it keeps scanning while you're away.
-
-## 2I. Start the 24/7 loop
-
-**Simple way:** double-click **run_24_7.bat** in the
-`Desktop\DTSCANNER\momentum_watchlist` folder and leave that window open. It will
-rescan every 5 minutes during market hours and idle otherwise.
-
-**Auto-start way (so it restarts itself after a reboot):** in Command Prompt,
-adjusting the username if the Dell isn't logged in as `shrek`:
-
-```bat
-schtasks /create /tn "Momentum Watchlist" /tr "\"%USERPROFILE%\Desktop\DTSCANNER\momentum_watchlist\run_24_7.bat\"" /sc onlogon
-```
-
-**Dell done.** It's now generating your watchlist all day.
+> Authorize. One time only.
 
 ---
 
-# PART 3 — ON YOUR PHONE
+# PART 3 — TURN ON THE WEB PAGE  (one-time, on GitHub) · ~2 min
+
+You may have already done this. Verify it:
+
+1. Go to **https://github.com/shoudabobbin/DTSCANNER → Settings → Pages**.
+2. Source = **Deploy from a branch**. Branch = **gh-pages**, Folder = **/ (root)**. Save.
+3. Wait ~1 minute, open **https://shoudabobbin.github.io/DTSCANNER/**.
+
+You should see the "Momentum Watchlist" card page (NOT the old "Morning
+Watchlist"). If it still shows the old one, the branch is still set to `main` —
+change it to `gh-pages` here.
+
+---
+
+# PART 4 — RUN IT 24/7 ON THE DELL
+
+### 4A. Stop the Dell from sleeping
+Settings → **System → Power** → set **Sleep = Never** (when plugged in).
+
+### 4B. Start the loop
+**Simple way (recommended):** open the `momentum_watchlist` folder and
+**double-click `run_24_7.bat`**. Leave that black window open. It rescans every
+5 minutes during market hours and idles nights/weekends.
+
+**Auto-start after reboot (optional):** in Command Prompt, replace
+`YOURNAME` with the Dell's Windows username:
+```
+schtasks /create /tn "Momentum Watchlist" /tr "C:\Users\YOURNAME\Desktop\DTSCANNER\momentum_watchlist\run_24_7.bat" /sc onlogon
+```
+(Not sure of the username? Run `echo %USERNAME%` in Command Prompt.)
+
+---
+
+# PART 5 — PHONE
 
 1. Open **https://shoudabobbin.github.io/DTSCANNER/**.
-2. Tap the share/menu button → **Add to Home Screen**.
-3. That icon now opens your watchlist. The page reloads itself every 5 minutes
-   while the Dell is running, so it's always current.
+2. Share menu → **Add to Home Screen**.
+3. The page reloads itself every 5 minutes while the Dell is running.
 
 ---
 
-# PART 4 — EVERYDAY USE
+# DAILY LIFE
+Nothing to do — it runs itself during market hours. Open the page whenever.
 
-Nothing. The Dell runs it during market hours automatically. Open the page on
-your phone whenever you want.
-
-**To change the settings** (price range, how many names, etc.): on the Dell, open
-`momentum_watchlist\scanner.py`, edit the `CONFIG` block near the top, save, then
-close and reopen `run_24_7.bat`.
-
-**To update the code later** (if I send you a new version): on the laptop
-`git push`, then on the Dell run `git pull` in the `DTSCANNER` folder and restart
-the bat.
+- **Change settings** (price range, list size, etc.): edit the `CONFIG` block at
+  the top of `scanner.py` on the Dell, save, close and reopen `run_24_7.bat`.
+- **Get a new version I send you:** on the laptop `git push`; on the Dell
+  `git pull` then restart the bat.
 
 ---
 
-# PART 5 — TROUBLESHOOTING
-
+# TROUBLESHOOTING
 | Problem | Fix |
 |---|---|
 | `python` not recognized | Reinstall Python, check "Add python.exe to PATH". |
-| `git push` asks for a password | Passwords don't work anymore — the sign-in popup uses your browser. If it won't appear, run `git push` once manually and complete the browser sign-in. |
-| Page not updating | Is `run_24_7.bat` still running? Is it a weekday during US market hours (9:30–4:00 ET)? Check the bat window for a red `! publish failed` line. |
-| "No names match" | Quiet day, or filters too tight. Lower `min_change_pct` or `min_rel_volume` in `CONFIG`. |
-| Screeners return nothing | Yahoo occasionally rate-limits; it retries next cycle. If persistent, `python -m pip install --upgrade yfinance`. |
-| Want to test without waiting for market hours | Run `python scanner.py --once --publish` manually any time. |
+| `git push`/`--publish` asks for a password | Passwords don't work — complete the browser sign-in popup. |
+| Page shows the OLD swing list | GitHub → Settings → Pages → branch = **gh-pages**. |
+| Page not updating | Is `run_24_7.bat` still running? Is it a weekday, market hours (9:30–4 ET)? |
+| List looks empty/thin in the morning | Should be fixed now — it always shows the day's movers (tagged IN PLAY vs MOVER). If still thin, tell me and we'll lower `min_change_pct`. |
+| Screeners return nothing | Yahoo hiccup — it retries next cycle and shows the last good list meanwhile. |
 
----
-
-*Reminder: this is a list of names to study, not buy signals. It has no backtested
-edge. Do your own chart work and size by risk. Not financial advice.*
+*Reminder: the list is names to STUDY, not buy signals. Do your own chart work and size by risk. Not financial advice.*
