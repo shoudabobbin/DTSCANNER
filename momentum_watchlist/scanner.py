@@ -40,8 +40,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG = {
     "min_price": 1.0,
     "max_price": 20.0,
-    "min_change_pct": 5.0,        # % move that flags a name "in play" (SOFT, not a hard cut)
-    "min_rel_volume": 1.5,        # rel-volume that confirms "in play" (relaxed in the first hour)
+    "min_change_pct": 10.0,       # A-list: up (or down) at least this % on the day
+    "min_rel_volume": 5.0,        # A-list: at least this x normal volume, TIME-OF-DAY ADJUSTED
+    "require_news": False,        # True = only tag IN PLAY names that have a fresh news catalyst
     "min_dollar_volume": 1_000_000,  # liquidity floor, on AVERAGE daily $ volume (time-of-day proof)
     "max_market_cap": 3_000_000_000,   # skip megacap name brands (None to disable)
 
@@ -208,6 +209,78 @@ def passes(r, c):
     return True
 
 
+# Rough cumulative share of a normal day's volume traded by each minute after the
+# 9:30 open (U-shaped, front-loaded). Lets "5x relative volume" mean something at
+# 9:45am — by 10:00 a stock has only had time to trade ~17% of a full day.
+_VOL_CURVE = [(0, 0.02), (15, 0.09), (30, 0.17), (60, 0.27), (90, 0.35),
+              (120, 0.42), (180, 0.53), (240, 0.62), (300, 0.72), (360, 0.86), (390, 1.0)]
+
+
+def _expected_vol_fraction(mins):
+    if mins <= 0:
+        return _VOL_CURVE[0][1]
+    if mins >= 390:
+        return 1.0
+    for i in range(1, len(_VOL_CURVE)):
+        m0, f0 = _VOL_CURVE[i - 1]; m1, f1 = _VOL_CURVE[i]
+        if mins <= m1:
+            return f0 + (f1 - f0) * (mins - m0) / (m1 - m0)
+    return 1.0
+
+
+def _adj_rvol(r, mins):
+    """Relative volume put on a full-day pace. rvol is today-so-far vs a full-day
+    average, which reads low intraday; dividing by the expected fraction of the
+    day elapsed turns it into 'on pace for Nx a normal day'."""
+    rv = r.get("rvol")
+    if rv is None:
+        return None
+    return rv / (_expected_vol_fraction(mins) or 1.0)
+
+
+def fetch_news(sym):
+    """Most recent headline for a ticker (best-effort). has_news = something ran
+    in the last ~48h. yfinance's news schema varies by version, so handle both."""
+    import yfinance as yf
+    try:
+        items = yf.Ticker(sym).news or []
+    except Exception:
+        return {"has_news": False, "headline": None}
+    now = dt.datetime.now(dt.timezone.utc)
+    best = None; best_ts = -1.0
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        title = ts = None
+        c = it.get("content") if isinstance(it.get("content"), dict) else None
+        if c:
+            title = c.get("title")
+            pd = c.get("pubDate") or c.get("displayTime")
+            if pd:
+                try:
+                    ts = dt.datetime.fromisoformat(str(pd).replace("Z", "+00:00"))
+                except Exception:
+                    ts = None
+        if not title:
+            title = it.get("title")
+            ep = it.get("providerPublishTime")
+            if ep:
+                try:
+                    ts = dt.datetime.fromtimestamp(ep, dt.timezone.utc)
+                except Exception:
+                    ts = None
+        if not title:
+            continue
+        tsv = ts.timestamp() if ts else 0.0
+        if tsv > best_ts:
+            best_ts = tsv
+            age_h = (now - ts).total_seconds() / 3600 if ts else 999
+            best = {"headline": str(title)[:95], "age_h": age_h}
+    if not best:
+        return {"has_news": False, "headline": None}
+    return {"has_news": best["age_h"] <= 48, "headline": best["headline"]}
+
+
 def _intraday_drive(r):
     """% moved since the OPEN, signed by trade direction. Positive = still pushing
     the way it gapped; <= 0 = gapped then stalled or faded (a gap-and-die)."""
@@ -226,28 +299,35 @@ def _extension(r):
     return rp if (r["change"] or 0) >= 0 else (1 - rp)
 
 
-def is_in_play(r, c, early):
-    """A real mover, with volume, that is STILL moving intraday — not a gap-and-die.
-    Needs: a big enough % move + volume confirmation (relaxed in the first hour)
-    + either fresh drive since the open OR price pinned near the day's extreme."""
+def is_in_play(r, c):
+    """The A-list. Your momentum spec, all required:
+      1. up/down >= min_change_pct on the day
+      2. time-adjusted relative volume >= min_rel_volume (on pace for Nx a normal day)
+      3. still moving intraday (drive since the open or pinned at the day's extreme)
+      4. a fresh news catalyst — only if require_news is on
+    Anything that misses one is still shown, tagged MOVER."""
     if abs(r["change"]) < c["min_change_pct"]:
         return False
-    rv = r["rvol"]
-    if not (early or rv is None or rv >= c["min_rel_volume"]):
+    arv = r.get("adj_rvol")
+    if arv is not None and arv < c["min_rel_volume"]:
+        return False
+    if c.get("require_news") and not r.get("has_news"):
         return False
     if r.get("since_open") is None and r.get("range_pos") is None:
-        return True   # no intraday data available — don't penalize
+        return True   # no intraday data — don't penalize
     return (_intraday_drive(r) >= c.get("min_since_open_pct", 1.0)
             or _extension(r) >= 0.66)
 
 
 def raw_score(r):
-    """Rank by intraday action, not the overnight gap: reward continuation since
-    the open and being near the day's extreme; the gap itself is a minor term."""
+    """Rank by intraday action: continuation since the open + being near the day's
+    extreme + how heavy the (time-adjusted) volume is, with a nudge for a catalyst."""
     drive = max(_intraday_drive(r), 0.0)
     ext = _extension(r)                       # 0..1
-    vol = math.log10((r["rvol"] or 1.0) * 10 + 1)
-    return (drive * 2.0 + ext * 8.0 + abs(r["change"] or 0) * 0.3) * vol
+    arv = r.get("adj_rvol") or r.get("rvol") or 1.0
+    vol = math.log10(max(arv, 0.1) * 10 + 1)
+    news = 1.15 if r.get("has_news") else 1.0
+    return (drive * 2.0 + ext * 8.0 + abs(r["change"] or 0) * 0.3) * vol * news
 
 
 def suggested_stop_pct(r):
@@ -257,21 +337,30 @@ def suggested_stop_pct(r):
 
 
 def build_rows(raw, cfg, live=False):
-    early = cfg.get("_early", False)
+    mins = cfg.get("_mins_open", 390)
     rows = [normalize(q) for q in raw]
     elig = [r for r in rows if passes(r, cfg)]
     if not cfg["include_shorts"]:
         elig = [r for r in elig if r["change"] >= 0]
+    # time-adjusted relative volume is available from the quote alone
     for r in elig:
-        r["_s"] = raw_score(r)
-        r["_inplay"] = is_in_play(r, cfg, early)
-    # in-play names first, then everything else by score — so the page always
-    # fills with the day's biggest movers even when nothing clears the bar yet
+        r["adj_rvol"] = _adj_rvol(r, mins)
+        r["_s"] = raw_score(r)                       # preliminary (no news yet)
+        r["_inplay"] = is_in_play(r, cfg)
     elig.sort(key=lambda r: (not r["_inplay"], -r["_s"]))
     kept = elig[: max(cfg["top_n"], cfg.get("min_names", 0))]
+
     if live:
         for r in kept:
-            r.update(enrich(r["symbol"], r))
+            r.update(enrich(r["symbol"], r))         # ADR + level backfill
+            r.update(fetch_news(r["symbol"]))        # catalyst
+            r["_s"] = raw_score(r)                    # re-score WITH news
+            r["_inplay"] = is_in_play(r, cfg)         # re-evaluate WITH news
+        kept.sort(key=lambda r: (not r["_inplay"], -r["_s"]))
+
+    if cfg.get("require_news"):
+        kept = [r for r in kept if r.get("has_news")] or kept  # never blank the page
+
     if kept:
         lo = min(r["_s"] for r in kept); hi = max(r["_s"] for r in kept)
         span = (hi - lo) or 1
@@ -282,9 +371,12 @@ def build_rows(raw, cfg, live=False):
             "symbol": r["symbol"], "name": r["name"][:34],
             "dir": "long" if r["change"] >= 0 else "short",
             "in_play": bool(r["_inplay"]),
+            "has_news": bool(r.get("has_news")),
+            "headline": r.get("headline"),
             "price": round(r["price"], 2),
             "change": round(r["change"], 1),
             "rvol": round(r["rvol"], 1) if r["rvol"] else None,
+            "adj_rvol": round(r["adj_rvol"], 1) if r.get("adj_rvol") is not None else None,
             "dollar_vol": int(r["dollar_vol"]) if r["dollar_vol"] else None,
             "gap": round(r["gap"], 1) if r.get("gap") is not None else None,
             "since_open": round(r["since_open"], 1) if r.get("since_open") is not None else None,
@@ -339,6 +431,8 @@ border-radius:12px;padding:12px}
 .tag{font-size:10px;font-weight:700;padding:2px 6px;border-radius:5px;margin-left:6px;vertical-align:2px}
 .tag.long{background:var(--greenbg);color:var(--green)} .tag.short{background:var(--redbg);color:var(--red)}
 .tag.play{background:var(--greenbg);color:var(--green)} .tag.mover{background:#eef0f3;color:var(--mut)}
+.tag.news{background:#fff3d6;color:#8a6d00}
+.why .hl{color:var(--blue)}
 .rk{font-size:16px;font-weight:700;text-align:right;line-height:1}
 .rk span{font-size:9px;color:var(--mut);font-weight:500;letter-spacing:.05em}
 .why{font-size:12px;color:var(--mut);margin:3px 0 8px}
@@ -366,6 +460,8 @@ th{background:var(--blue);color:#fff;font-size:11px;font-weight:600}
 <div class="bar">
   <div class="seg" id="side"><button data-v="all" class="on">All</button>
     <button data-v="long">Long</button><button data-v="short">Short</button></div>
+  <div class="seg" id="aplus"><button data-v="off" class="on">All names</button>
+    <button data-v="on">A+ only</button></div>
   <div class="seg" id="layout"><button data-v="cards" class="on">Cards</button>
     <button data-v="table">Table</button></div>
   <select id="sort">
@@ -392,11 +488,12 @@ th{background:var(--blue);color:#fff;font-size:11px;font-weight:600}
 <div id="tablewrap" class="hide"></div>
 
 <div class="foot">
-<b>CHG (gap)</b> is the move vs yesterday's close — mostly the overnight gap. <b>SINCE OPEN</b> is how it's moved
-since 9:30, which is what tells a live mover from a gap-and-die. <b>IN PLAY</b> = still moving intraday (near the
-day's extreme or driving since the open); <b>MOVER</b> = it gapped but has gone quiet. Ranking favors intraday
-action, not the gap. Score orders THIS list on THIS refresh — not a probability or prediction. Shares/stop are
-risk-based suggestions; set your real stop on the chart. A list of names to STUDY, not signals to buy. Not financial advice.
+<b>IN PLAY</b> = your full momentum spec: up/down 10%+, on pace for 5x+ normal volume, still moving intraday, and
+(when required) a news catalyst. <b>MOVER</b> = a mover that misses one of those. Hit <b>A+ only</b> to see just the
+IN PLAY names. <b>REL VOL</b> is time-adjusted — "on pace for Nx a normal day," so 5x means something at 9:45am too.
+<b>SINCE OPEN</b> tells a live mover from a gap-and-die. <b>NEWS</b> shows the latest headline (free-source, best-effort —
+it can miss or lag, and doesn't prove the news is the cause). Score orders THIS list on THIS refresh — not a
+prediction. Shares/stop are risk-based suggestions; set your real stop on the chart. Names to STUDY, not signals to buy. Not financial advice.
 </div></div>
 
 <script>
@@ -407,6 +504,7 @@ const S = {
   side: localStorage.getItem('side') || 'all',
   layout: localStorage.getItem('layout') || 'cards',
   sort: localStorage.getItem('sort') || 'rank',
+  aplus: localStorage.getItem('aplus')==='on',
   filter: '',
   acct: +localStorage.getItem('acct') || META.acct,
   risk: +localStorage.getItem('risk') || META.risk,
@@ -426,6 +524,7 @@ function sized(r){
 }
 function rows(){
   let a = DATA.filter(r => S.side==='all' || r.dir===S.side);
+  if(S.aplus) a = a.filter(r => r.in_play);
   if(S.filter) a = a.filter(r => r.symbol.toLowerCase().includes(S.filter.toLowerCase()));
   a.sort((x,y)=> (y[S.sort]??-1e9) - (x[S.sort]??-1e9));
   return a;
@@ -441,15 +540,16 @@ function card(r){
   return `<div class="card ${r.dir}">
    <div class="chd"><div><span class="tk">${r.symbol}</span>
      <span class="tag ${r.dir}">${r.dir.toUpperCase()}</span>
-     <span class="tag ${r.in_play?'play':'mover'}">${r.in_play?'IN PLAY':'MOVER'}</span></div>
+     <span class="tag ${r.in_play?'play':'mover'}">${r.in_play?'IN PLAY':'MOVER'}</span>
+     ${r.has_news?'<span class="tag news">NEWS</span>':''}</div>
      <div class="rk">${r.rank}<br><span>SCORE</span></div></div>
-   <div class="why">${r.name}</div>
+   <div class="why">${r.name}${r.headline?' &middot; <span class="hl">'+r.headline+'</span>':''}</div>
    ${rangeMark(r)}
    <div class="stats">
      <div class="st"><div class="k">PRICE</div><div class="v">$${r.price.toFixed(2)}</div></div>
      <div class="st"><div class="k">CHG (GAP)</div><div class="v ${cc}">${r.change>=0?'+':''}${r.change}%</div></div>
      <div class="st"><div class="k">SINCE OPEN</div><div class="v ${r.since_open==null?'':((r.since_open>=0)===(r.dir==='long')?'g':'r')}">${r.since_open==null?'—':(r.since_open>=0?'+':'')+r.since_open+'%'}</div></div>
-     <div class="st"><div class="k">RVOL</div><div class="v">${r.rvol??'—'}${r.rvol?'x':''}</div></div>
+     <div class="st"><div class="k">REL VOL</div><div class="v">${r.adj_rvol??'—'}${r.adj_rvol?'x':''}</div></div>
      <div class="st"><div class="k">$VOL</div><div class="v">${r.dollar_vol?'$'+(r.dollar_vol/1e6).toFixed(0)+'M':'—'}</div></div>
      <div class="st"><div class="k">DAY LOW</div><div class="v">${r.day_low?'$'+r.day_low:'—'}</div></div>
      <div class="st"><div class="k">DAY HIGH</div><div class="v">${r.day_high?'$'+r.day_high:'—'}</div></div>
@@ -463,14 +563,14 @@ function card(r){
    </div></div>`;
 }
 function table(list){
-  let h = `<table><tr><th>Ticker</th><th>Dir</th><th>Price</th><th>Chg (gap)</th><th>Since open</th><th>RVol</th>
+  let h = `<table><tr><th>Ticker</th><th>Dir</th><th>Price</th><th>Chg (gap)</th><th>Since open</th><th>Rel Vol</th>
    <th>$Vol</th><th>Range</th><th>ADR</th><th>Shares</th><th>Score</th></tr>`;
   for(const r of list){ const z=sized(r);
     const soc = r.since_open==null?'var(--mut)':(((r.since_open>=0)===(r.dir==='long'))?'var(--green)':'var(--red)');
-    h+=`<tr><td>${r.symbol}</td><td>${r.dir}</td><td>$${r.price.toFixed(2)}</td>
+    h+=`<tr><td>${r.symbol}${r.has_news?' <span title="'+(r.headline||'news')+'" style="color:var(--green)">&#9679;</span>':''}</td><td>${r.dir}</td><td>$${r.price.toFixed(2)}</td>
      <td style="color:${r.change>=0?'var(--green)':'var(--red)'}">${r.change>=0?'+':''}${r.change}%</td>
      <td style="color:${soc}">${r.since_open==null?'—':(r.since_open>=0?'+':'')+r.since_open+'%'}</td>
-     <td>${r.rvol??'—'}</td><td>${r.dollar_vol?'$'+(r.dollar_vol/1e6).toFixed(0)+'M':'—'}</td>
+     <td>${r.adj_rvol??'—'}${r.adj_rvol?'x':''}</td><td>${r.dollar_vol?'$'+(r.dollar_vol/1e6).toFixed(0)+'M':'—'}</td>
      <td>${r.day_low&&r.day_high?'$'+r.day_low+'–'+r.day_high:'—'}</td>
      <td>${r.adr_pct?r.adr_pct+'%':'—'}</td><td>${z.shares}</td><td>${r.rank}</td></tr>`; }
   return h+'</table>';
@@ -507,12 +607,16 @@ document.querySelectorAll('#side button').forEach(b=>b.onclick=()=>{
 document.querySelectorAll('#layout button').forEach(b=>b.onclick=()=>{
   S.layout=b.dataset.v; localStorage.setItem('layout',S.layout);
   document.querySelectorAll('#layout button').forEach(x=>x.classList.toggle('on',x===b)); render();});
+document.querySelectorAll('#aplus button').forEach(b=>b.onclick=()=>{
+  S.aplus=(b.dataset.v==='on'); localStorage.setItem('aplus',b.dataset.v);
+  document.querySelectorAll('#aplus button').forEach(x=>x.classList.toggle('on',x===b)); render();});
 $('#sort').value=S.sort; $('#sort').onchange=e=>{S.sort=e.target.value;localStorage.setItem('sort',S.sort);render();};
 $('#filter').oninput=e=>{S.filter=e.target.value;render();};
 function bindNum(id,key){const el=$('#'+id);el.value=S[key];el.oninput=e=>{S[key]=+e.target.value||0;localStorage.setItem(key,S[key]);render();};}
 bindNum('acct','acct');bindNum('risk','risk');bindNum('maxpos','maxpos');
 document.querySelectorAll('#side button').forEach(x=>x.classList.toggle('on',x.dataset.v===S.side));
 document.querySelectorAll('#layout button').forEach(x=>x.classList.toggle('on',x.dataset.v===S.layout));
+document.querySelectorAll('#aplus button').forEach(x=>x.classList.toggle('on',x.dataset.v===(S.aplus?'on':'off')));
 render();
 </script></body></html>"""
 
@@ -542,13 +646,14 @@ def write_outputs(rows, tone, cfg, note):
         f.write(render_html(rows, tone, cfg, note))
     with open(os.path.join(cfg["out_dir"], "watchlist.csv"), "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["symbol", "dir", "in_play", "price", "change_pct", "since_open_pct",
-                    "rvol", "dollar_volume", "gap_pct", "day_low", "day_high",
-                    "adr_pct", "score"])
+        w.writerow(["symbol", "dir", "in_play", "has_news", "price", "change_pct",
+                    "since_open_pct", "adj_rvol", "dollar_volume", "gap_pct", "day_low",
+                    "day_high", "adr_pct", "score", "headline"])
         for r in rows:
-            w.writerow([r["symbol"], r["dir"], r.get("in_play"), r["price"], r["change"],
-                        r.get("since_open"), r["rvol"], r["dollar_vol"], r["gap"],
-                        r["day_low"], r["day_high"], r["adr_pct"], r["rank"]])
+            w.writerow([r["symbol"], r["dir"], r.get("in_play"), r.get("has_news"),
+                        r["price"], r["change"], r.get("since_open"), r.get("adj_rvol"),
+                        r["dollar_vol"], r["gap"], r["day_low"], r["day_high"],
+                        r["adr_pct"], r["rank"], r.get("headline")])
 
 
 # ============================================================
@@ -656,12 +761,12 @@ def load_cache():
 def scan_once(cfg, publish_it=False):
     if cfg.get("_demo"):
         raw = DEMO
-        cfg["_early"] = False
+        cfg["_mins_open"] = 120          # pretend it's ~2h into the session
     else:
         screens = list(cfg["screeners_long"]) + (cfg["screeners_short"] if cfg["include_shorts"] else [])
         print("Scanning Yahoo screeners...")
         raw = get_screener_rows(screens)
-        cfg["_early"] = 0 <= _minutes_since_open(cfg) < 60   # relax rvol in the first hour
+        cfg["_mins_open"] = max(_minutes_since_open(cfg), 1)   # for time-adjusted rel volume
     cfg["_scanned"] = len(raw)
     tone = tone_from(-0.97) if cfg.get("_demo") else get_market_tone(cfg["market_tone_symbol"])
     rows = build_rows(raw, cfg, live=True)   # live=True enriches levels (patched offline in demo)
@@ -739,6 +844,21 @@ def _demo_enrich_patch():
     return fake
 
 
+_DEMO_NEWS = {
+    "BIYA": "Baiya announces FDA clearance for lead device",
+    "WLDS": "Wearable Devices signs major distribution deal",
+    "PRLD": "Prelude Therapeutics posts positive trial data",
+    "ENTX": "Entera Bio drops after disappointing update",
+}
+
+
+def _demo_news_patch():
+    def fake(sym):
+        h = _DEMO_NEWS.get(sym)
+        return {"has_news": bool(h), "headline": h}
+    return fake
+
+
 def main():
     ap = argparse.ArgumentParser(description="Momentum day-trading watchlist")
     ap.add_argument("--once", action="store_true", help="one scan and exit")
@@ -752,8 +872,9 @@ def main():
     if a.no_shorts: cfg["include_shorts"] = False
     if a.demo:
         cfg["_demo"] = True
-        global enrich
+        global enrich, fetch_news
         enrich = _demo_enrich_patch()
+        fetch_news = _demo_news_patch()
 
     if a.loop:
         loop(cfg, a.publish)
