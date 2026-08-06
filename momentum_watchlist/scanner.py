@@ -69,8 +69,9 @@ CONFIG = {
     "default_risk_pct": 1.0,
     "default_max_position_pct": 25,
 
-    # loop / hosting
-    "refresh_minutes": 5,
+    # loop / hosting. 10 min keeps GitHub Pages builds under its ~10/hour limit;
+    # each publish is a real deploy, so faster than this can get throttled/stale.
+    "refresh_minutes": 10,
     "market_open":  (9, 5),       # ET hh,mm  (a little before the bell for pre-market)
     "market_close": (16, 5),      # ET hh,mm
     "publish_branch": "gh-pages",
@@ -665,38 +666,42 @@ def _git(args, cwd, check=True):
 
 
 def publish(cfg):
-    """Force-push docs/ to the gh-pages branch as one rolling commit.
-    Requires the repo to have a remote 'origin'. See PUBLISHING.md."""
+    """Publish docs/ to the gh-pages branch with a NORMAL fast-forward commit.
+
+    Do NOT force-push here: GitHub Pages frequently does not rebuild on a
+    force-pushed (rewritten) history, which leaves the live site stuck on an old
+    deploy even though the branch moved on. A fresh commit pushed fast-forward
+    reliably triggers a Pages build. See PUBLISHING.md."""
     repo = _find_repo_root(HERE)
     if not repo:
         print("  ! not inside a git repo — skipping publish"); return
     branch = cfg["publish_branch"]
     wt = os.path.join(repo, ".ghpages_wt")
     try:
+        remote_has = bool(_git(["ls-remote", "--heads", "origin", branch], repo, check=False).stdout.strip())
         if not os.path.isdir(wt):
-            have = (_git(["branch", "--list", branch], repo).stdout.strip()
-                    or _git(["ls-remote", "--heads", "origin", branch], repo, check=False).stdout.strip())
-            if have:
+            if remote_has or _git(["branch", "--list", branch], repo).stdout.strip():
                 _git(["worktree", "add", wt, branch], repo)
             else:
                 _git(["worktree", "add", "--detach", wt], repo)
                 _git(["checkout", "--orphan", branch], wt)
                 _git(["reset", "--hard"], wt, check=False)
-        # sync files
+        # start from the latest remote so our commit fast-forwards (triggers a build)
+        if remote_has:
+            _git(["fetch", "origin", branch], repo, check=False)
+            _git(["reset", "--hard", f"origin/{branch}"], wt, check=False)
         for fn in ("index.html", "watchlist.csv", ".nojekyll"):
             src = os.path.join(cfg["out_dir"], fn)
             if os.path.exists(src):
                 shutil.copy(src, os.path.join(wt, fn))
         _git(["add", "-A"], wt)
-        has = _git(["rev-parse", "-q", "--verify", "HEAD"], wt, check=False).returncode == 0
-        if has:
-            _git(["commit", "--amend", "-m", "live watchlist", "--no-edit"], wt, check=False)
-        else:
-            _git(["commit", "-m", "live watchlist"], wt)
-        _git(["push", "-f", "origin", branch], wt)
+        if _git(["diff", "--cached", "--quiet"], wt, check=False).returncode == 0:
+            print("  no change — skipping publish"); return
+        _git(["commit", "-m", "update " + dt.datetime.now().strftime("%Y-%m-%d %H:%M")], wt)
+        _git(["push", "origin", branch], wt)   # normal push -> GitHub Pages rebuilds
         print("  published to gh-pages")
     except subprocess.CalledProcessError as e:
-        print("  ! publish failed:", (e.stderr or str(e))[:160])
+        print("  ! publish failed:", (e.stderr or str(e))[:200])
 
 
 def _find_repo_root(start):
